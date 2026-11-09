@@ -1,0 +1,27 @@
+name: LookCam Bridge
+version: "0.1.0"
+slug: lookcam_bridge
+description: Local LookCam (PPPP) camera to RTSP bridge, no cloud
+url: https://github.com/badroum/lookcam-bridge
+# Prebuilt image: the Supervisor only pulls it, nothing is built on the host.
+image: ghcr.io/badroum/lookcam-bridge-{arch}
+arch:
+  - aarch64
+  - amd64
+startup: services
+boot: auto
+init: false
+# host network: LAN discovery (UDP broadcast 32108) and P2P session need it
+host_network: true
+ports:
+  8554/tcp: 8554
+ports_description:
+  8554/tcp: RTSP (rtsp://<host>:8554/v99)
+options:
+  camera_ip: 192.168.1.42
+  password: ""
+  state: "2"
+schema:
+  camera_ip: str
+  password: password
+  state: list(1|2)

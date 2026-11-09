@@ -1,0 +1,4 @@
+*.bin
+*.h264
+*.apk
+node_modules/

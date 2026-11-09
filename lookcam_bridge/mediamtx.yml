@@ -1,0 +1,10 @@
+logLevel: warn
+rtsp: yes
+rtspAddress: :8554
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+api: no
+paths:
+  v99: {}
