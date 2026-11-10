@@ -1,0 +1,27 @@
+name: LookCam Sync
+version: "0.1.0"
+slug: lookcam_sync
+description: Downloads LookCam motion (alarm) clips from the camera SD card to /media, locally, on a schedule
+url: https://github.com/badroum/lookcam-bridge
+# Prebuilt image: the Supervisor only pulls it, nothing is built on the host.
+image: ghcr.io/badroum/lookcam-sync-{arch}
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+# host network: LAN discovery (UDP broadcast 32108) and P2P session need it
+host_network: true
+map:
+  - media:rw
+options:
+  camera_ip: 192.168.1.42
+  password: ""
+  interval_minutes: 60
+  keep_days: 7
+schema:
+  camera_ip: str
+  password: password
+  interval_minutes: int(15,1440)
+  keep_days: int(1,365)
