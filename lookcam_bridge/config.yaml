@@ -1,5 +1,5 @@
 name: LookCam Bridge
-version: "0.1.0"
+version: "0.2.0"
 slug: lookcam_bridge
 description: Local LookCam (PPPP) camera to RTSP bridge, no cloud
 url: https://github.com/badroum/lookcam-bridge
@@ -13,6 +13,9 @@ boot: auto
 init: false
 # host network: LAN discovery (UDP broadcast 32108) and P2P session need it
 host_network: true
+# recordings go to /share/lookcam (reachable through the Samba "share" folder)
+map:
+  - share:rw
 ports:
   8554/tcp: 8554
 ports_description:
@@ -21,7 +24,13 @@ options:
   camera_ip: 192.168.1.42
   password: ""
   state: "2"
+  record: true
+  retention_days: 7
+  segment_minutes: 5
 schema:
   camera_ip: str
   password: password
   state: list(1|2)
+  record: bool
+  retention_days: int(1,30)
+  segment_minutes: int(1,60)
