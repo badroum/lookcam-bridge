@@ -1,5 +1,5 @@
 name: LookCam Sync
-version: "0.1.0"
+version: "0.1.1"
 slug: lookcam_sync
 description: Downloads LookCam motion (alarm) clips from the camera SD card to /media, locally, on a schedule
 url: https://github.com/badroum/lookcam-bridge

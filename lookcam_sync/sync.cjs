@@ -16,6 +16,8 @@ const OUT_DIR = process.env.OUT_DIR || path.join(process.env.USERPROFILE || ".",
 const MAX_CLIP_MS = Number(process.env.MAX_CLIP_MS || 600000); // shorter than this = alarm clip
 const MAX_FILES = Number(process.env.MAX_FILES || 1000);
 const STALL_MS = 30000;
+// Names already fetched. Lets the consumer (the PC) move clips away without them being downloaded again.
+const STATE_FILE = process.env.STATE_FILE || "";
 const TZ = Math.round(-new Date().getTimezoneOffset() / 60);
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -180,14 +182,27 @@ function download(sess, clip, dest) {
   }).then(() => { fs.renameSync(part, dest); });
 }
 
+function loadFetched() {
+  try { return new Set(JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch { return new Set(); }
+}
+function saveFetched(set) {
+  if (!STATE_FILE) return;
+  // bounded index (~40 alarm clips/day): keep the newest 5000 names. Not pruned by the SD listing,
+  // which can skip files while the camera records.
+  const keep = [...set].sort().slice(-5000);
+  fs.writeFileSync(STATE_FILE + ".tmp", JSON.stringify(keep));
+  fs.renameSync(STATE_FILE + ".tmp", STATE_FILE);
+}
+
 async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
+  const fetched = loadFetched();
   if (!PWD) log("warning: no camera password (CAM_PASSWORD)");
   let sess = await openSession();
   log("session up");
   const clips = (await listAll(sess)).filter((c) => c.alarm).sort((a, b) => b.time - a.time);
   const only = process.env.ONLY_DAY; // e.g. 2026-11-10 for tests
-  const todo = clips.filter((c) => (!only || c.day === only) && !fs.existsSync(path.join(OUT_DIR, c.day, c.name)));
+  const todo = clips.filter((c) => (!only || c.day === only) && !fetched.has(c.name) && !fs.existsSync(path.join(OUT_DIR, c.day, c.name)));
   log(`${clips.length} alarm clips on SD, ${todo.length} to download`);
   for (const c of todo) {
     const dir = path.join(OUT_DIR, c.day);
@@ -199,6 +214,8 @@ async function main() {
       try {
         if (sess.closed) { sess = await openSession(); log("session reopened"); }
         await download(sess, c, dest);
+        fetched.add(c.name);
+        saveFetched(fetched);
         log(`ok ${c.day}/${c.name} ${(c.size / 1e6).toFixed(1)} MB in ${Math.round((Date.now() - t0) / 1000)} s`);
         break;
       } catch (e) {
@@ -208,6 +225,7 @@ async function main() {
       }
     }
   }
+  saveFetched(fetched);
   sess.close();
   log("done");
 }

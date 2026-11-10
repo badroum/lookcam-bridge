@@ -4,6 +4,7 @@
 export CAM_IP="$(bashio::config 'camera_ip')"
 export CAM_PASSWORD="$(bashio::config 'password')"
 export OUT_DIR="/media/boite_aux_lettres"
+export STATE_FILE="/data/fetched.json"   # clips already fetched (the PC may move them away)
 INTERVAL=$(( $(bashio::config 'interval_minutes') * 60 ))
 KEEP_DAYS="$(bashio::config 'keep_days')"
 mkdir -p "${OUT_DIR}"

@@ -38,6 +38,7 @@ Builds on ideas from [cam-reverse](https://github.com/DavidVentura/cam-reverse) 
 `lookcam_sync/` downloads the camera's own **alarm clips** (motion, ~3 min each) from its SD card, over the local P2P
 protocol, every `interval_minutes` (default 60), into `/media/boite_aux_lettres/YYYY-MM-DD/`. Read-only on the camera
 (LoginDev, GetTfVideoList, DownloadFile); resumes interrupted downloads; deletes only its own copies after `keep_days`.
+It remembers fetched clips in `/data/fetched.json`, so a consumer may move clips off the share (e.g. `robocopy /MOV`, excluding `*.part`) without them being fetched again.
 Prebuilt image `ghcr.io/badroum/lookcam-sync-{arch}` (nodejs only, nothing is built on the host).
 
 The camera handles one P2P session badly at a time: don't run the live bridge or another downloader in parallel.
