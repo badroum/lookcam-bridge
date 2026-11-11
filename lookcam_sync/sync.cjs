@@ -20,6 +20,10 @@ const BUSY_MAX_MS = 10 * 60000; // give up the round after this much busy time
 // Names already fetched. Lets the consumer (the PC) move clips away without them being downloaded again.
 const STATE_FILE = process.env.STATE_FILE || "";
 // Disk budget for OUT_DIR (bytes): the round stops once it is reached, the consumer empties the share.
+// Files recorded in the last RECENT_MIN minutes go first, then the backlog oldest first.
+const RECENT_MIN = Number(process.env.RECENT_MIN || 60);
+// Stop taking new files after this long, so the next round fetches the recent ones again (0 = no limit).
+const ROUND_MAX_MS = Number(process.env.ROUND_MAX_MIN || 0) * 60000;
 const MAX_BYTES = Number(process.env.MAX_GB || 0) * 1e9;
 // Names the consumer already has (one per line), e.g. written by the PC; never fetched again.
 const SKIP_FILE = process.env.SKIP_FILE || path.join(OUT_DIR, "already_on_pc.txt");
@@ -258,15 +262,22 @@ async function main() {
   const skip = loadSkip();
   const only = process.env.ONLY_DAY; // e.g. 2026-11-10 for tests
   const wanted = (c) => (!only || c.day === only) && !fetched.has(c.name) && !skip.has(c.name);
-  // every finished recording, whatever its length (set in the camera app), oldest first:
-  // the SD card loops and overwrites its oldest files first. No duration = still being recorded.
-  const todo = all.filter((c) => c.durMs !== null && wanted(c))
+  // every finished recording, whatever its length (set in the camera app). No duration = still being recorded.
+  // Recent files first (so the page stays current during a long catch-up), then the backlog oldest first:
+  // the SD card loops and overwrites its oldest files first.
+  const todo = orderTodo(all.filter((c) => c.durMs !== null && wanted(c)), stampOf(new Date(Date.now() - RECENT_MIN * 60000)))
     .map((c) => ({ ...c, dir: path.join(OUT_DIR, c.day) }))
-    .sort((a, b) => a.stamp.localeCompare(b.stamp))
     .filter((c) => !fs.existsSync(path.join(c.dir, c.name)));
-  log(`${all.length} files on SD, ${todo.length} to download`);
-  let busySince = 0;
+  const nRecent = todo.filter((c) => c.recent).length;
+  log(`${all.length} files on SD, ${todo.length} to download (${nRecent} from the last ${RECENT_MIN} min first)`);
+  const roundStart = Date.now();
+  let busySince = 0, backlogLeft = false;
   outer: for (const c of todo) {
+    if (ROUND_MAX_MS && !c.recent && Date.now() - roundStart > ROUND_MAX_MS) {
+      log(`round time limit reached (${ROUND_MAX_MS / 60000} min), backlog continues next round`);
+      backlogLeft = true;
+      break;
+    }
     if (MAX_BYTES && dirBytes(OUT_DIR) + c.size > MAX_BYTES) {
       log(`storage budget reached (${MAX_BYTES / 1e9} GB), the rest waits for the next round`);
       break;
@@ -303,9 +314,24 @@ async function main() {
   saveFetched(fetched);
   sess.close();
   log("done");
+  return backlogLeft;
 }
 
-module.exports = { clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes };
+// Camera clock is local time; file names carry YYYYMMDD-HHMMSS in that local time.
+function stampOf(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+// Files stamped at or after `since` first (oldest first among them), then the rest oldest first.
+function orderTodo(list, since) {
+  const byStamp = (a, b) => a.stamp.localeCompare(b.stamp);
+  const recent = list.filter((c) => c.stamp >= since).sort(byStamp).map((c) => ({ ...c, recent: true }));
+  const backlog = list.filter((c) => c.stamp < since).sort(byStamp).map((c) => ({ ...c, recent: false }));
+  return [...recent, ...backlog];
+}
+
+module.exports = { clipInfo, orderTodo, stampOf, makeChunkParser, openSession, listAll, loadSkip, dirBytes };
 if (require.main === module) {
-  main().then(() => process.exit(0), (e) => { log("error: " + e.message); process.exit(1); });
+  // exit 3: stopped by the round time limit with backlog left, run.sh starts the next round soon
+  main().then((backlogLeft) => process.exit(backlogLeft ? 3 : 0), (e) => { log("error: " + e.message); process.exit(1); });
 }

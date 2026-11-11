@@ -35,7 +35,7 @@ Builds on ideas from [cam-reverse](https://github.com/DavidVentura/cam-reverse) 
 
 ## LookCam Sync (second add-on)
 
-`lookcam_sync/` downloads every recording from the camera's SD card (whatever the segment length set in the camera app), oldest first, over the local P2P
+`lookcam_sync/` downloads every recording from the camera's SD card (whatever the segment length set in the camera app): the last interval's files first, then any backlog oldest first, over the local P2P
 protocol, every `interval_minutes` (default 60), into `/media/boite_aux_lettres/YYYY-MM-DD/`. Read-only on the camera
 (LoginDev, GetTfVideoList, DownloadFile); resumes interrupted downloads; deletes only its own copies after `keep_days`.
 It remembers fetched clips in `/data/fetched.json`, so a consumer may move clips off the share (e.g. `robocopy /MOV`, excluding `*.part`) without them being fetched again.

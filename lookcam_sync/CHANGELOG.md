@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.3.1 — 2026-11-11
+
+- Pendant un rattrapage, les vidéos récentes ne restent plus bloquées derrière l'arriéré. Chaque tour prend d'abord les fichiers enregistrés depuis le dernier intervalle (`interval_minutes` + 30 min de marge), puis continue l'arriéré du plus ancien au plus récent.
+- Un tour d'arriéré s'arrête au bout d'un intervalle. Le tour suivant repart 1 min plus tard, en reprenant d'abord les vidéos récentes. Le rattrapage n'est donc pas ralenti, mais les nouvelles vidéos arrivent au plus tard une heure après leur enregistrement.
+- Hors rattrapage, rien ne change : un tour toutes les `interval_minutes`.
+
 ## 0.3.0 — 2026-11-11
 
 - L'option `continuous` est supprimée. Tous les fichiers de la carte SD sont récupérés, quelle que soit leur durée (réglée dans l'application de la caméra), du plus ancien au plus récent. Seul le fichier en cours d'enregistrement est ignoré.
