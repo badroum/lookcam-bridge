@@ -41,6 +41,7 @@ function clipInfo(item) {
     durMs,
     alarm: durMs !== null && durMs < MAX_CLIP_MS,
     day: n ? `${n[1].slice(0, 4)}-${n[1].slice(4, 6)}-${n[1].slice(6, 8)}` : "unknown",
+    stamp: n ? n[1] + n[2] : "", // YYYYMMDDHHMMSS from the file name, sorts chronologically
   };
 }
 
@@ -261,16 +262,23 @@ async function main() {
   const skip = loadSkip();
   const only = process.env.ONLY_DAY; // e.g. 2026-11-10 for tests
   const wanted = (c) => (!only || c.day === only) && !fetched.has(c.name) && !skip.has(c.name);
-  // alarm clips newest first; continuous oldest first (the SD card loops, oldest are overwritten first)
-  const alarms = all.filter((c) => c.alarm && wanted(c)).sort((a, b) => b.time - a.time)
+  // oldest first, whatever the kind: the SD card loops and overwrites its oldest files first
+  const alarms = all.filter((c) => c.alarm && wanted(c))
     .map((c) => ({ ...c, dir: path.join(OUT_DIR, c.day) }));
-  const conts = !CONTINUOUS ? [] : all.filter((c) => !c.alarm && c.durMs !== null && wanted(c)).sort((a, b) => a.time - b.time)
+  const conts = !CONTINUOUS ? [] : all.filter((c) => !c.alarm && c.durMs !== null && wanted(c))
     .map((c) => ({ ...c, dir: path.join(OUT_DIR, "continu", c.day) }));
-  const todo = [...alarms, ...conts].filter((c) => !fs.existsSync(path.join(c.dir, c.name)));
+  const todo = [...alarms, ...conts].sort((a, b) => a.stamp.localeCompare(b.stamp))
+    .filter((c) => !fs.existsSync(path.join(c.dir, c.name)));
   log(`${all.filter((c) => c.alarm).length} alarm clips on SD, ${alarms.length} alarm + ${conts.length} continuous to download`);
-  let busySince = 0;
+  let busySince = 0, budgetFull = false;
   outer: for (const c of todo) {
-    if (!c.alarm && MAX_BYTES && dirBytes(OUT_DIR) + c.size > MAX_BYTES) { log(`storage budget reached (${MAX_BYTES / 1e9} GB), continuous files left for next round`); break; }
+    if (!c.alarm && budgetFull) continue;
+    if (!c.alarm && MAX_BYTES && dirBytes(OUT_DIR) + c.size > MAX_BYTES) {
+      // keep fetching the alarm clips, only the continuous files wait for the next round
+      log(`storage budget reached (${MAX_BYTES / 1e9} GB), continuous files left for next round`);
+      budgetFull = true;
+      continue;
+    }
     fs.mkdirSync(c.dir, { recursive: true });
     const dest = path.join(c.dir, c.name);
     if (fs.existsSync(dest)) continue;
