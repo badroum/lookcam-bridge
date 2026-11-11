@@ -1,11 +1,11 @@
-// Boite aux lettres - download motion (alarm) clips from the LookCam camera SD card over local P2P.
+// Boite aux lettres - download the recordings from the LookCam camera SD card over local P2P.
 // Read-only on the camera: LoginDev, GetTfVideoList, DownloadFile. Never deletes anything.
 //
 // Protocol (reversed from LookCam 1.3.12):
 //   commands on DRW channel 1, framed A0 AF AF AF|00|tz|u64 ts|8x00|u32 len|json|F4 F3 F2 F1
 //   DownloadFile {patch,pos,state:1,userid} -> data on DRW channel 3 in chunks:
 //     A0 AF AF AF|u32 userid|u32 seq|u32 0x7f|5 bytes|u32le len @21|data(len)|F4 F3 F2 F1
-//   SD file names: CYC_DV_YYYYMMDD-HHMMSS@<duration ms>.mp4  (alarm clips ~180 s, continuous ~1800 s)
+//   SD file names: CYC_DV_YYYYMMDD-HHMMSS@<duration ms>.mp4  (segment length set in the camera app)
 const dgram = require("dgram");
 const fs = require("fs");
 const path = require("path");
@@ -13,16 +13,13 @@ const path = require("path");
 const CAM_IP = process.env.CAM_IP || "192.168.1.42";
 const PWD = process.env.CAM_PASSWORD || "";
 const OUT_DIR = process.env.OUT_DIR || path.join(process.env.USERPROFILE || ".", "Documents", "Boite_aux_lettres");
-const MAX_CLIP_MS = Number(process.env.MAX_CLIP_MS || 600000); // shorter than this = alarm clip
 const MAX_FILES = Number(process.env.MAX_FILES || 1000);
 const STALL_MS = 30000;
 const BUSY_WAIT_MS = 60000; // camera answered state=3 (still sending an earlier file): wait this long
 const BUSY_MAX_MS = 10 * 60000; // give up the round after this much busy time
 // Names already fetched. Lets the consumer (the PC) move clips away without them being downloaded again.
 const STATE_FILE = process.env.STATE_FILE || "";
-// Optional: also fetch the continuous (~30 min) recordings, after the alarm clips, into OUT_DIR/continu/<day>/.
-const CONTINUOUS = process.env.CONTINUOUS === "1";
-// Disk budget for OUT_DIR (bytes). Continuous files are skipped once it is reached; alarm clips always go.
+// Disk budget for OUT_DIR (bytes): the round stops once it is reached, the consumer empties the share.
 const MAX_BYTES = Number(process.env.MAX_GB || 0) * 1e9;
 // Names the consumer already has (one per line), e.g. written by the PC; never fetched again.
 const SKIP_FILE = process.env.SKIP_FILE || path.join(OUT_DIR, "already_on_pc.txt");
@@ -39,7 +36,6 @@ function clipInfo(item) {
   return {
     ...item,
     durMs,
-    alarm: durMs !== null && durMs < MAX_CLIP_MS,
     day: n ? `${n[1].slice(0, 4)}-${n[1].slice(4, 6)}-${n[1].slice(6, 8)}` : "unknown",
     stamp: n ? n[1] + n[2] : "", // YYYYMMDDHHMMSS from the file name, sorts chronologically
   };
@@ -230,9 +226,9 @@ function loadFetched() {
 }
 function saveFetched(set) {
   if (!STATE_FILE) return;
-  // bounded index (~40 alarm clips/day): keep the newest 5000 names. Not pruned by the SD listing,
-  // which can skip files while the camera records.
-  const keep = [...set].sort().slice(-5000);
+  // bounded index (up to ~480 files/day with 3-min segments): keep the newest 20000 names. Not pruned
+  // by the SD listing, which can skip files while the camera records.
+  const keep = [...set].sort().slice(-20000);
   fs.writeFileSync(STATE_FILE + ".tmp", JSON.stringify(keep));
   fs.renameSync(STATE_FILE + ".tmp", STATE_FILE);
 }
@@ -262,22 +258,18 @@ async function main() {
   const skip = loadSkip();
   const only = process.env.ONLY_DAY; // e.g. 2026-11-10 for tests
   const wanted = (c) => (!only || c.day === only) && !fetched.has(c.name) && !skip.has(c.name);
-  // oldest first, whatever the kind: the SD card loops and overwrites its oldest files first
-  const alarms = all.filter((c) => c.alarm && wanted(c))
-    .map((c) => ({ ...c, dir: path.join(OUT_DIR, c.day) }));
-  const conts = !CONTINUOUS ? [] : all.filter((c) => !c.alarm && c.durMs !== null && wanted(c))
-    .map((c) => ({ ...c, dir: path.join(OUT_DIR, "continu", c.day) }));
-  const todo = [...alarms, ...conts].sort((a, b) => a.stamp.localeCompare(b.stamp))
+  // every finished recording, whatever its length (set in the camera app), oldest first:
+  // the SD card loops and overwrites its oldest files first. No duration = still being recorded.
+  const todo = all.filter((c) => c.durMs !== null && wanted(c))
+    .map((c) => ({ ...c, dir: path.join(OUT_DIR, c.day) }))
+    .sort((a, b) => a.stamp.localeCompare(b.stamp))
     .filter((c) => !fs.existsSync(path.join(c.dir, c.name)));
-  log(`${all.filter((c) => c.alarm).length} alarm clips on SD, ${alarms.length} alarm + ${conts.length} continuous to download`);
-  let busySince = 0, budgetFull = false;
+  log(`${all.length} files on SD, ${todo.length} to download`);
+  let busySince = 0;
   outer: for (const c of todo) {
-    if (!c.alarm && budgetFull) continue;
-    if (!c.alarm && MAX_BYTES && dirBytes(OUT_DIR) + c.size > MAX_BYTES) {
-      // keep fetching the alarm clips, only the continuous files wait for the next round
-      log(`storage budget reached (${MAX_BYTES / 1e9} GB), continuous files left for next round`);
-      budgetFull = true;
-      continue;
+    if (MAX_BYTES && dirBytes(OUT_DIR) + c.size > MAX_BYTES) {
+      log(`storage budget reached (${MAX_BYTES / 1e9} GB), the rest waits for the next round`);
+      break;
     }
     fs.mkdirSync(c.dir, { recursive: true });
     const dest = path.join(c.dir, c.name);

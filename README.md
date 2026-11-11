@@ -35,15 +35,14 @@ Builds on ideas from [cam-reverse](https://github.com/DavidVentura/cam-reverse) 
 
 ## LookCam Sync (second add-on)
 
-`lookcam_sync/` downloads the camera's own **alarm clips** (motion, ~3 min each) from its SD card, over the local P2P
+`lookcam_sync/` downloads every recording from the camera's SD card (whatever the segment length set in the camera app), oldest first, over the local P2P
 protocol, every `interval_minutes` (default 60), into `/media/boite_aux_lettres/YYYY-MM-DD/`. Read-only on the camera
 (LoginDev, GetTfVideoList, DownloadFile); resumes interrupted downloads; deletes only its own copies after `keep_days`.
 It remembers fetched clips in `/data/fetched.json`, so a consumer may move clips off the share (e.g. `robocopy /MOV`, excluding `*.part`) without them being fetched again.
 Prebuilt image `ghcr.io/badroum/lookcam-sync-{arch}` (nodejs only, nothing is built on the host).
 
 The camera handles one P2P session badly at a time: don't run the live bridge or another downloader in parallel.
-Option `continuous: true` also fetches the continuous 30-min recordings (mixed with the alarm clips; every round downloads the oldest files first)
-into `/media/boite_aux_lettres/continu/YYYY-MM-DD/`, within a `max_gb` disk budget (~6.5 GB per day of footage).
+Option `max_gb` caps the share (~6.5 GB per day of footage): once reached, the round stops and the rest waits for the next one.
 Names listed in `/media/boite_aux_lettres/already_on_pc.txt` (one per line, written by the PC) are never fetched.
 
 A PC can then copy the clips from the `media` Samba share and run the ROI motion analysis locally.

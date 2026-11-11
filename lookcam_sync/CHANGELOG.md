@@ -1,5 +1,13 @@
 # Journal des modifications
 
+## 0.3.0 — 2026-11-11
+
+- L'option `continuous` est supprimée. Tous les fichiers de la carte SD sont récupérés, quelle que soit leur durée (réglée dans l'application de la caméra), du plus ancien au plus récent. Seul le fichier en cours d'enregistrement est ignoré.
+- Un seul dossier par jour, `/media/boite_aux_lettres/AAAA-MM-JJ/`. Le sous-dossier `continu/` n'est plus alimenté, mais les fichiers qui s'y trouvent déjà restent en place jusqu'à leur récupération par le PC.
+- Le quota `max_gb` s'applique désormais à tous les fichiers. Une fois atteint, le tour s'arrête et la suite attend le tour suivant, le temps que le PC vide le partage.
+- L'index des fichiers déjà récupérés garde maintenant 20 000 noms au lieu de 5 000, ce qui correspond à environ 40 jours de segments de 3 min.
+- Si `continuous` figure encore dans ta configuration, le Supervisor l'ignore, et tu peux le retirer.
+
 ## 0.2.3 — 2026-11-11
 
 - Chaque tour télécharge désormais les vidéos de la plus ancienne à la plus récente, clips courts et enregistrements continus mélangés. Avant, les clips courts partaient du plus récent. Le tri se fait sur l'heure contenue dans le nom du fichier (AAAAMMJJ-HHMMSS). La carte SD écrase ses fichiers les plus anciens en premier : ce sont eux qu'il faut sauver d'abord.
