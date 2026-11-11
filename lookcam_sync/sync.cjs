@@ -18,6 +18,12 @@ const MAX_FILES = Number(process.env.MAX_FILES || 1000);
 const STALL_MS = 30000;
 // Names already fetched. Lets the consumer (the PC) move clips away without them being downloaded again.
 const STATE_FILE = process.env.STATE_FILE || "";
+// Optional: also fetch the continuous (~30 min) recordings, after the alarm clips, into OUT_DIR/continu/<day>/.
+const CONTINUOUS = process.env.CONTINUOUS === "1";
+// Disk budget for OUT_DIR (bytes). Continuous files are skipped once it is reached; alarm clips always go.
+const MAX_BYTES = Number(process.env.MAX_GB || 0) * 1e9;
+// Names the consumer already has (one per line), e.g. written by the PC; never fetched again.
+const SKIP_FILE = process.env.SKIP_FILE || path.join(OUT_DIR, "already_on_pc.txt");
 const TZ = Math.round(-new Date().getTimezoneOffset() / 60);
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -194,20 +200,40 @@ function saveFetched(set) {
   fs.renameSync(STATE_FILE + ".tmp", STATE_FILE);
 }
 
+function loadSkip() {
+  try { return new Set(fs.readFileSync(SKIP_FILE, "utf8").split(/\r?\n/).map((l) => l.trim().split(/[\\/]/).pop()).filter(Boolean)); }
+  catch { return new Set(); }
+}
+function dirBytes(dir) {
+  let n = 0;
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    n += e.isDirectory() ? dirBytes(p) : fs.statSync(p).size;
+  }
+  return n;
+}
+
 async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const fetched = loadFetched();
   if (!PWD) log("warning: no camera password (CAM_PASSWORD)");
   let sess = await openSession();
   log("session up");
-  const clips = (await listAll(sess)).filter((c) => c.alarm).sort((a, b) => b.time - a.time);
+  const all = await listAll(sess);
+  const skip = loadSkip();
   const only = process.env.ONLY_DAY; // e.g. 2026-11-10 for tests
-  const todo = clips.filter((c) => (!only || c.day === only) && !fetched.has(c.name) && !fs.existsSync(path.join(OUT_DIR, c.day, c.name)));
-  log(`${clips.length} alarm clips on SD, ${todo.length} to download`);
+  const wanted = (c) => (!only || c.day === only) && !fetched.has(c.name) && !skip.has(c.name);
+  // alarm clips newest first; continuous oldest first (the SD card loops, oldest are overwritten first)
+  const alarms = all.filter((c) => c.alarm && wanted(c)).sort((a, b) => b.time - a.time)
+    .map((c) => ({ ...c, dir: path.join(OUT_DIR, c.day) }));
+  const conts = !CONTINUOUS ? [] : all.filter((c) => !c.alarm && c.durMs !== null && wanted(c)).sort((a, b) => a.time - b.time)
+    .map((c) => ({ ...c, dir: path.join(OUT_DIR, "continu", c.day) }));
+  const todo = [...alarms, ...conts].filter((c) => !fs.existsSync(path.join(c.dir, c.name)));
+  log(`${all.filter((c) => c.alarm).length} alarm clips on SD, ${alarms.length} alarm + ${conts.length} continuous to download`);
   for (const c of todo) {
-    const dir = path.join(OUT_DIR, c.day);
-    fs.mkdirSync(dir, { recursive: true });
-    const dest = path.join(dir, c.name);
+    if (!c.alarm && MAX_BYTES && dirBytes(OUT_DIR) + c.size > MAX_BYTES) { log(`storage budget reached (${MAX_BYTES / 1e9} GB), continuous files left for next round`); break; }
+    fs.mkdirSync(c.dir, { recursive: true });
+    const dest = path.join(c.dir, c.name);
     if (fs.existsSync(dest)) continue;
     for (let attempt = 1; attempt <= 3; attempt++) {
       const t0 = Date.now();
@@ -216,7 +242,7 @@ async function main() {
         await download(sess, c, dest);
         fetched.add(c.name);
         saveFetched(fetched);
-        log(`ok ${c.day}/${c.name} ${(c.size / 1e6).toFixed(1)} MB in ${Math.round((Date.now() - t0) / 1000)} s`);
+        log(`ok ${path.relative(OUT_DIR, dest)} ${(c.size / 1e6).toFixed(1)} MB in ${Math.round((Date.now() - t0) / 1000)} s`);
         break;
       } catch (e) {
         log(`fail ${c.name} attempt ${attempt}: ${e.message}`);
@@ -230,7 +256,7 @@ async function main() {
   log("done");
 }
 
-module.exports = { clipInfo, makeChunkParser, openSession, listAll };
+module.exports = { clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes };
 if (require.main === module) {
   main().then(() => process.exit(0), (e) => { log("error: " + e.message); process.exit(1); });
 }
