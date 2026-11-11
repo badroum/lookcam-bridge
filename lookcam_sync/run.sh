@@ -1,11 +1,10 @@
 #!/usr/bin/with-contenv bashio
-# Every <interval_minutes>: download new alarm clips from the camera SD card to /media/boite_aux_lettres/<day>/.
+# Every <interval_minutes>: download new recordings from the camera SD card to /media/boite_aux_lettres/<day>/.
 # Then remove clips older than <keep_days> on this host only (the camera and the PC keep theirs).
 export CAM_IP="$(bashio::config 'camera_ip')"
 export CAM_PASSWORD="$(bashio::config 'password')"
 export OUT_DIR="/media/boite_aux_lettres"
 export STATE_FILE="/data/fetched.json"   # clips already fetched (the PC may move them away)
-export CONTINUOUS="$(bashio::config.true 'continuous' && echo 1 || echo 0)"
 export MAX_GB="$(bashio::config 'max_gb')"
 INTERVAL=$(( $(bashio::config 'interval_minutes') * 60 ))
 KEEP_DAYS="$(bashio::config 'keep_days')"
