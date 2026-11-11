@@ -155,21 +155,38 @@ function openSession() {
   });
 }
 
-async function listAll(sess) {
+async function listAll(ref) {
   // The camera list is newest-first and shifts while it records, so one pass can skip files:
   // two full passes, union by path; enough at ~1 new file / 3 min.
+  // Some pages never get an answer (seen on 2026-11-11, page 22) and leave the session stuck:
+  // skip such a page on a fresh session instead of dropping the whole round.
+  // ref.sess is replaced when the session is reopened.
   const all = [];
+  let total = 0, skipped = 0;
   for (let pass = 0; pass < 2; pass++) for (let page = 0; page < 200; page++) {
-    let rep;
-    for (let t = 1; ; t++) {
-      try { rep = await sess.cmd({ cmd: "GetTfVideoList", page, count: 10 }, 20000); break; }
-      catch (e) { if (t >= 3) throw e; log(`list page ${page} retry ${t}`); }
+    let rep = null;
+    for (let t = 1; t <= 2; t++) {
+      try { rep = await ref.sess.cmd({ cmd: "GetTfVideoList", page, count: 10 }, 20000); break; }
+      catch (e) {
+        log(`list page ${page}: ${e.message}${t < 2 ? ", retry on a new session" : ", skipped"}`);
+        ref.sess.close();
+        await sleep(3000);
+        ref.sess = await openSession();
+      }
     }
+    if (!rep) {
+      skipped++;
+      if (skipped > 5) { log("too many unanswered list pages, using the partial list"); return finish(); }
+      if (total && (page + 1) * 10 >= total + 10) break;
+      continue;
+    }
+    total = rep.allCount || total;
     const v = rep.value || [];
     all.push(...v);
-    if (!v.length || (page + 1) * 10 >= (rep.allCount || 0) + 10 || all.length >= 2 * MAX_FILES) break;
+    if (!v.length || (page + 1) * 10 >= total + 10 || all.length >= 2 * MAX_FILES) break;
   }
-  return [...new Map(all.map((v) => [v.patch, v])).values()].map(clipInfo);
+  return finish();
+  function finish() { return [...new Map(all.map((v) => [v.patch, v])).values()].map(clipInfo); }
 }
 
 function download(sess, clip, dest) {
@@ -238,7 +255,9 @@ async function main() {
   if (!PWD) log("warning: no camera password (CAM_PASSWORD)");
   let sess = await openSession();
   log("session up");
-  const all = await listAll(sess);
+  const ref = { sess };
+  const all = await listAll(ref);
+  sess = ref.sess;
   const skip = loadSkip();
   const only = process.env.ONLY_DAY; // e.g. 2026-11-10 for tests
   const wanted = (c) => (!only || c.day === only) && !fetched.has(c.name) && !skip.has(c.name);
