@@ -16,6 +16,8 @@ const OUT_DIR = process.env.OUT_DIR || path.join(process.env.USERPROFILE || ".",
 const MAX_CLIP_MS = Number(process.env.MAX_CLIP_MS || 600000); // shorter than this = alarm clip
 const MAX_FILES = Number(process.env.MAX_FILES || 1000);
 const STALL_MS = 30000;
+const BUSY_WAIT_MS = 60000; // camera answered state=3 (still sending an earlier file): wait this long
+const BUSY_MAX_MS = 10 * 60000; // give up the round after this much busy time
 // Names already fetched. Lets the consumer (the PC) move clips away without them being downloaded again.
 const STATE_FILE = process.env.STATE_FILE || "";
 // Optional: also fetch the continuous (~30 min) recordings, after the alarm clips, into OUT_DIR/continu/<day>/.
@@ -94,7 +96,14 @@ function openSession() {
         waiters.push(w);
         send(pppp(0xd0, Buffer.concat([h, encodeJson({ pwd: PWD, ...obj })])));
       });
-    sess.close = () => { if (sess.closed) return; sess.closed = true; timers.forEach(clearInterval); try { s.close(); } catch {} };
+    sess.close = () => {
+      if (sess.closed) return;
+      // tell the camera the session is over (MSG_CLOSE), otherwise it keeps the old session and its
+      // download slot until its own timeout and answers DownloadFile with state=3 (busy) meanwhile
+      try { if (cam) for (let i = 0; i < 3; i++) s.send(pppp(0xf0), cam.port, cam.address); } catch {}
+      sess.closed = true; timers.forEach(clearInterval);
+      setTimeout(() => { try { s.close(); } catch {} }, 200);
+    };
 
     const deliver = (ch, idx, data, fn) => {
       const o = (order[ch] ||= { next: 0, pend: new Map() }); // camera numbers each channel from 0 per session
@@ -170,7 +179,14 @@ function download(sess, clip, dest) {
   let got = pos, lastProgress = Date.now();
   const userid = 1 + Math.floor(Math.random() * 100);
   return new Promise((resolve, reject) => {
-    const done = (err) => { clearInterval(tick); sess.onCh3 = null; fs.closeSync(fd); err ? reject(err) : resolve(); };
+    let finished = false;
+    const done = (err) => {
+      if (finished) return;
+      finished = true; clearInterval(tick); sess.onCh3 = null; fs.closeSync(fd);
+      // on failure, pause this transfer on the camera (state 2 = PAUSE, PpcsDownloadControl in the app) to free its slot
+      if (err && !sess.closed) sess.cmd({ cmd: "DownloadFile", patch: clip.patch, pos: got, state: 2, userid }, 3000).catch(() => {});
+      err ? reject(err) : resolve();
+    };
     sess.onCh3 = makeChunkParser((data, uid) => {
       if (uid !== userid) return;
       const take = Math.min(data.length, clip.size - got);
@@ -182,7 +198,10 @@ function download(sess, clip, dest) {
       if (Date.now() - lastProgress > STALL_MS) return done(new Error(`stalled at ${got}/${clip.size}`));
     }, 2000);
     sess.cmd({ cmd: "DownloadFile", patch: clip.patch, pos, state: 1, userid }).then(
-      (rep) => { if (rep.state !== 0) done(new Error("DownloadFile refused state=" + rep.state)); },
+      (rep) => {
+        if (rep.state === 3) done(Object.assign(new Error("camera busy (state=3)"), { busy: true }));
+        else if (rep.state !== 0) done(new Error("DownloadFile refused state=" + rep.state));
+      },
       (e) => done(e),
     );
   }).then(() => { fs.renameSync(part, dest); });
@@ -230,24 +249,35 @@ async function main() {
     .map((c) => ({ ...c, dir: path.join(OUT_DIR, "continu", c.day) }));
   const todo = [...alarms, ...conts].filter((c) => !fs.existsSync(path.join(c.dir, c.name)));
   log(`${all.filter((c) => c.alarm).length} alarm clips on SD, ${alarms.length} alarm + ${conts.length} continuous to download`);
-  for (const c of todo) {
+  let busySince = 0;
+  outer: for (const c of todo) {
     if (!c.alarm && MAX_BYTES && dirBytes(OUT_DIR) + c.size > MAX_BYTES) { log(`storage budget reached (${MAX_BYTES / 1e9} GB), continuous files left for next round`); break; }
     fs.mkdirSync(c.dir, { recursive: true });
     const dest = path.join(c.dir, c.name);
     if (fs.existsSync(dest)) continue;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= 3; ) {
       const t0 = Date.now();
       try {
         if (sess.closed) { sess = await openSession(); log("session reopened"); }
         await download(sess, c, dest);
+        busySince = 0;
         fetched.add(c.name);
         saveFetched(fetched);
         log(`ok ${path.relative(OUT_DIR, dest)} ${(c.size / 1e6).toFixed(1)} MB in ${Math.round((Date.now() - t0) / 1000)} s`);
         break;
       } catch (e) {
+        if (e.busy) {
+          // the camera still serves an earlier transfer: wait for it, do not count it as a failed attempt
+          busySince ||= Date.now();
+          if (Date.now() - busySince > BUSY_MAX_MS) { log(`camera still busy after ${BUSY_MAX_MS / 60000} min, next round`); break outer; }
+          log(`camera busy, waiting ${BUSY_WAIT_MS / 1000} s`);
+          await sleep(BUSY_WAIT_MS); // keep the session open: closing and reopening does not free the slot sooner
+          continue;
+        }
         log(`fail ${c.name} attempt ${attempt}: ${e.message}`);
+        attempt++;
         sess.close();
-        await sleep(3000);
+        await sleep(attempt <= 3 ? 10000 : 3000);
       }
     }
   }
