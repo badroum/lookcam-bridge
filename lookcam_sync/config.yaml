@@ -1,5 +1,5 @@
 name: LookCam Sync
-version: "0.1.1"
+version: "0.2.0"
 slug: lookcam_sync
 description: Downloads LookCam motion (alarm) clips from the camera SD card to /media, locally, on a schedule
 url: https://github.com/badroum/lookcam-bridge
@@ -20,8 +20,12 @@ options:
   password: ""
   interval_minutes: 60
   keep_days: 7
+  continuous: false
+  max_gb: 4
 schema:
   camera_ip: str
   password: password
   interval_minutes: int(15,1440)
   keep_days: int(1,365)
+  continuous: bool
+  max_gb: int(1,200)

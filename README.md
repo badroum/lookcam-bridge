@@ -42,4 +42,8 @@ It remembers fetched clips in `/data/fetched.json`, so a consumer may move clips
 Prebuilt image `ghcr.io/badroum/lookcam-sync-{arch}` (nodejs only, nothing is built on the host).
 
 The camera handles one P2P session badly at a time: don't run the live bridge or another downloader in parallel.
+Option `continuous: true` also fetches the continuous 30-min recordings (after the alarm clips, oldest first)
+into `/media/boite_aux_lettres/continu/YYYY-MM-DD/`, within a `max_gb` disk budget (~6.5 GB per day of footage).
+Names listed in `/media/boite_aux_lettres/already_on_pc.txt` (one per line, written by the PC) are never fetched.
+
 A PC can then copy the clips from the `media` Samba share and run the ROI motion analysis locally.
