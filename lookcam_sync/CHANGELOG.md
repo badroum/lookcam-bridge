@@ -6,6 +6,10 @@
 - Le journal indique quand l'add-on démarre : version, adresse de la caméra, intervalle, niveau de journal, quota et durée de conservation. Il indique aussi « LookCam Sync stopping » à l'arrêt.
 - Chaque tour est numéroté et son type est précisé : « Round 1 (start-up, full catch-up) », puis « Round 2 (regular) »…
 - En fin de tour, le journal donne l'heure du tour suivant, par exemple « Next sync at 21:54 (in 60 min) ».
+- Nouvelle option `download_order` pour choisir l'ordre des téléchargements :
+  - `oldest_first` (par défaut, comportement actuel) : du plus ancien au plus récent, car la carte SD écrase ses fichiers les plus anciens en premier ;
+  - `newest_first` : du plus récent au plus ancien. Les dernières vidéos arrivent d'abord, l'arriéré ensuite. Attention : pendant un long rattrapage, les plus anciennes peuvent être écrasées par la caméra avant d'être récupérées.
+- L'add-on retient maintenant jusqu'où tout est récupéré (`/data/complete_until.txt`). Un tour régulier relit la carte jusqu'à ce point, et pas seulement jusqu'à la dernière vidéo récupérée. Ainsi, avec `newest_first`, ou quand le quota arrête un tour, les vidéos plus anciennes encore en attente ne sont pas oubliées.
 
 ## 0.3.1 — 2026-11-13
 

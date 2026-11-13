@@ -24,6 +24,9 @@ const MAX_BYTES = Number(process.env.MAX_GB || 0) * 1e9;
 // Names the consumer already has (one per line), e.g. written by the PC; never fetched again.
 const SKIP_FILE = process.env.SKIP_FILE || path.join(OUT_DIR, "already_on_pc.txt");
 const TZ = Math.round(-new Date().getTimezoneOffset() / 60);
+// download order (add-on option download_order): oldest_first (default; the SD card overwrites its oldest
+// files first) or newest_first (the latest recordings arrive first, the backlog after)
+const NEWEST_FIRST = String(process.env.DOWNLOAD_ORDER || "").toLowerCase() === "newest_first";
 
 // Log levels (add-on option log_level): debug > info > warning > error. info shows the progress of a round
 // (SD listing every 10 pages, plan, each download with what is left); debug adds every page, every
@@ -320,6 +323,23 @@ function markFullList() {
   if (FULL_LIST_FILE) try { fs.writeFileSync(FULL_LIST_FILE, new Date().toISOString()); } catch {}
 }
 
+// Watermark: every finished recording up to this stamp is fetched or on the PC. Regular rounds list the SD
+// card down to it. Kept separately from the newest fetched file because with newest_first (or a round
+// stopped by the storage budget) the newest file is fetched before older ones.
+const WATERMARK_FILE = STATE_FILE ? path.join(path.dirname(STATE_FILE), "complete_until.txt") : "";
+function loadWatermark() {
+  try { const w = fs.readFileSync(WATERMARK_FILE, "utf8").trim(); return /^\d{14}$/.test(w) ? w : ""; } catch { return ""; }
+}
+function saveWatermark(w) {
+  if (WATERMARK_FILE && w) try { fs.writeFileSync(WATERMARK_FILE, w); } catch {}
+}
+// "20261112052714" -> "20261112052713" (one second earlier)
+function prevStamp(st) {
+  const d = new Date(stampMs(st) - 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
+}
+
 function loadSkip() {
   try { return new Set(fs.readFileSync(SKIP_FILE, "utf8").split(/\r?\n/).map((l) => l.trim().split(/[\\/]/).pop()).filter(Boolean)); }
   catch { return new Set(); }
@@ -346,9 +366,10 @@ async function main() {
   // fetched, oldest first) and at least once a day to catch older gaps (a file that failed, a round cut
   // short). Other rounds are incremental: only what was recorded after the newest file we already have.
   const skip = loadSkip();
-  const newest = newestKnown(fetched, skip);
+  const newest = loadWatermark() || newestKnown(fetched, skip);
   const fullDue = !newest || process.env.FULL_LIST === "1" || Date.now() - lastFullList() > FULL_LIST_EVERY_MS;
-  log.info(fullDue ? "full round: whole SD card, every missing recording" : `regular round: recordings after ${fmtStamp(newest)}`);
+  log.info((fullDue ? "full round: whole SD card, every missing recording" : `regular round: recordings after ${fmtStamp(newest)}`) +
+    `, ${NEWEST_FIRST ? "newest" : "oldest"} first`);
   const all = await listAll(ref, fullDue ? "" : newest);
   if (fullDue) markFullList();
   sess = ref.sess;
@@ -363,13 +384,14 @@ async function main() {
       : fetched.has(c.name) ? "fetched" : fs.existsSync(path.join(dir, c.name)) ? "onShare" : "";
     if (why) { count[why]++; log.debug(`skip ${c.name}: ${why}`); } else todo.push({ ...c, dir });
   }
-  todo.sort((a, b) => a.stamp.localeCompare(b.stamp));
+  todo.sort((a, b) => (NEWEST_FIRST ? b.stamp.localeCompare(a.stamp) : a.stamp.localeCompare(b.stamp)));
   const todoBytes = todo.reduce((n, c) => n + (c.size || 0), 0);
   log.info(`${all.length} files listed, ${todo.length} to download (${fmtGB(todoBytes)}); ` +
     `${count.onPc} already on the PC, ${count.fetched} already fetched, ${count.onShare} already on the share, ${count.recording} being recorded` +
     (only ? `, ${count.otherDay} on other days` : ""));
-  if (todo.length) log.info(`to download: ${fmtStamp(todo[0].stamp)} to ${fmtStamp(todo[todo.length - 1].stamp)}, oldest first`);
+  if (todo.length) log.info(`to download: ${fmtStamp(todo[0].stamp)} to ${fmtStamp(todo[todo.length - 1].stamp)}, ${NEWEST_FIRST ? "newest" : "oldest"} first`);
   let busySince = 0, nOk = 0, nFail = 0, bytesOk = 0, msOk = 0, stopped = "";
+  const failed = new Set();
   outer: for (let i = 0; i < todo.length; i++) {
     const c = todo[i];
     if (MAX_BYTES) {
@@ -409,7 +431,7 @@ async function main() {
           continue;
         }
         log.warn(`fail ${c.name} attempt ${attempt}/3: ${e.message}`);
-        if (attempt === 3) nFail++;
+        if (attempt === 3) { nFail++; failed.add(c.name); }
         attempt++;
         sess.close();
         await sleep(attempt <= 3 ? 10000 : 3000);
@@ -418,12 +440,19 @@ async function main() {
   }
   saveFetched(fetched);
   sess.close();
+  // advance the watermark to just before the oldest recording still waiting (budget, busy camera), or to
+  // the newest finished one listed when nothing waits. Files that failed 3 times do not hold it back:
+  // the daily full listing tries them again.
+  const waiting = todo.filter((c) => c.stamp && !fetched.has(c.name) && !failed.has(c.name)).map((c) => c.stamp).sort();
+  const listed = all.filter((c) => c.stamp && c.durMs !== null).map((c) => c.stamp).sort();
+  const mark = waiting.length ? prevStamp(waiting[0]) : listed[listed.length - 1] || "";
+  if (mark && (!newest || mark > newest || fullDue)) { saveWatermark(mark); log.debug(`complete up to ${fmtStamp(mark)}`); }
   const left = todo.length - nOk - nFail;
   log.info(`round done in ${fmtDur(Date.now() - round0)}: ${nOk} downloaded (${fmtGB(bytesOk)}), ${nFail} failed` +
     (left > 0 ? `, ${left} left for the next round${stopped ? ` (${stopped})` : ""}` : ""));
 }
 
-module.exports = { clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes, fmtStamp, fmtDur, fmtGB, newestKnown };
+module.exports = { clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes, fmtStamp, fmtDur, fmtGB, newestKnown, prevStamp };
 if (require.main === module) {
   main().then(() => process.exit(0), (e) => { log.error(e.message); process.exit(1); });
 }

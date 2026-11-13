@@ -10,13 +10,17 @@ export MAX_GB="$(bashio::config 'max_gb')"
 LOG_LEVEL="info"
 if bashio::config.has_value 'log_level'; then LOG_LEVEL="$(bashio::config 'log_level')"; fi
 export LOG_LEVEL
+# oldest_first (default: the SD card overwrites its oldest files first) | newest_first
+DOWNLOAD_ORDER="oldest_first"
+if bashio::config.has_value 'download_order'; then DOWNLOAD_ORDER="$(bashio::config 'download_order')"; fi
+export DOWNLOAD_ORDER
 bashio::log.level "${LOG_LEVEL}"
 INTERVAL=$(( $(bashio::config 'interval_minutes') * 60 ))
 KEEP_DAYS="$(bashio::config 'keep_days')"
 mkdir -p "${OUT_DIR}"
 
-bashio::log.info "LookCam Sync ${ADDON_VERSION:-?} started: camera ${CAM_IP}, every $(( INTERVAL / 60 )) min, log level ${LOG_LEVEL}, budget ${MAX_GB} GB, keep ${KEEP_DAYS} days"
-bashio::log.info "First round: full catch-up of every missing recording, then regular rounds"
+bashio::log.info "LookCam Sync ${ADDON_VERSION:-?} started: camera ${CAM_IP}, every $(( INTERVAL / 60 )) min, log level ${LOG_LEVEL}, ${DOWNLOAD_ORDER/_/ }, budget ${MAX_GB} GB, keep ${KEEP_DAYS} days"
+bashio::log.info "First round: full catch-up of every missing recording (${DOWNLOAD_ORDER/_/ }), then regular rounds"
 trap 'bashio::log.info "LookCam Sync stopping"; exit 0' TERM INT
 
 # First round after start-up: full SD listing, every missing recording (oldest first).

@@ -22,6 +22,7 @@ options:
   keep_days: 7
   max_gb: 4
   log_level: info
+  download_order: oldest_first
 schema:
   camera_ip: str
   password: password
@@ -29,3 +30,4 @@ schema:
   keep_days: int(1,365)
   max_gb: int(1,200)
   log_level: list(debug|info|warning|error)
+  download_order: list(oldest_first|newest_first)

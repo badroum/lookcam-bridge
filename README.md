@@ -49,5 +49,8 @@ then list only the SD pages recorded after the newest clip already fetched or al
 newest-first), with a full listing once a day to catch older gaps. Option `log_level` (`debug`, `info`, `warning`,
 `error`; default `info`) sets the detail of the log: `info` shows the listing progress, the plan and each download with
 what is left; `debug` adds every page, every skipped file and the download progress every 15 s.
+Option `download_order`: `oldest_first` (default; the SD card overwrites its oldest files first) or `newest_first`.
+The add-on keeps the point up to which everything is fetched in `/data/complete_until.txt`, so a regular round lists
+down to it, and older recordings still waiting (newest_first, storage budget) are not skipped.
 
 A PC can then copy the clips from the `media` Samba share and run the ROI motion analysis locally.
