@@ -5,6 +5,7 @@ ARG BUILD_ARCH
 ARG BUILD_VERSION
 
 RUN apk add --no-cache nodejs
+ENV ADDON_VERSION=${BUILD_VERSION}
 
 COPY sync.cjs run.sh /
 RUN chmod a+x /run.sh
