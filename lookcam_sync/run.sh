@@ -15,9 +15,20 @@ INTERVAL=$(( $(bashio::config 'interval_minutes') * 60 ))
 KEEP_DAYS="$(bashio::config 'keep_days')"
 mkdir -p "${OUT_DIR}"
 
+# First round after start-up: full SD listing, every missing recording (oldest first).
+# Then the regular rounds every <interval_minutes>, incremental (plus one full listing a day).
+FULL_LIST=1
 while true; do
-  bashio::log.info "Sync from ${CAM_IP}"
-  node /sync.cjs || bashio::log.warning "sync ended with an error, retry next round"
+  if [ "${FULL_LIST}" = "1" ]; then
+    bashio::log.info "Start-up sync from ${CAM_IP}: fetching every missing recording"
+  else
+    bashio::log.info "Regular sync from ${CAM_IP}"
+  fi
+  if FULL_LIST="${FULL_LIST}" node /sync.cjs; then
+    FULL_LIST=0
+  else
+    bashio::log.warning "sync ended with an error, retry next round"
+  fi
   find "${OUT_DIR}" -type f \( -name '*.mp4' -o -name '*.part' \) -mtime +"${KEEP_DAYS}" -delete
   find "${OUT_DIR}" -mindepth 1 -type d -empty -delete
   bashio::log.info "Next sync in $(( INTERVAL / 60 )) min"

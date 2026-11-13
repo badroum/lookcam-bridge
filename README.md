@@ -44,8 +44,9 @@ Prebuilt image `ghcr.io/badroum/lookcam-sync-{arch}` (nodejs only, nothing is bu
 The camera handles one P2P session badly at a time: don't run the live bridge or another downloader in parallel.
 Option `max_gb` caps the share (~6.5 GB per day of footage): once reached, the round stops and the rest waits for the next one.
 Names listed in `/media/boite_aux_lettres/already_on_pc.txt` (one per line, written by the PC) are never fetched.
-Each round lists only the SD pages recorded after the newest clip already fetched or already on the PC (the list is
-newest-first), and does a full listing once a day to catch older gaps. Option `log_level` (`debug`, `info`, `warning`,
+At start-up, a first round lists the whole SD card and fetches every missing recording (oldest first). The regular rounds
+then list only the SD pages recorded after the newest clip already fetched or already on the PC (the list is
+newest-first), with a full listing once a day to catch older gaps. Option `log_level` (`debug`, `info`, `warning`,
 `error`; default `info`) sets the detail of the log: `info` shows the listing progress, the plan and each download with
 what is left; `debug` adds every page, every skipped file and the download progress every 15 s.
 

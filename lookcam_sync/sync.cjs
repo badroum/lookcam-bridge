@@ -342,13 +342,13 @@ async function main() {
   let sess = await openSession();
   log.info("session up");
   const ref = { sess };
-  // Incremental listing (only what was recorded after the newest file we already have), plus a full
-  // listing at least once a day to catch older gaps (a file that failed, a round cut short).
+  // Full listing at start-up (run.sh sets FULL_LIST=1 for the first round: every missing recording is
+  // fetched, oldest first) and at least once a day to catch older gaps (a file that failed, a round cut
+  // short). Other rounds are incremental: only what was recorded after the newest file we already have.
   const skip = loadSkip();
   const newest = newestKnown(fetched, skip);
-  // first run of this version: no marker yet, start the 24 h count now instead of a long full listing
-  if (newest && !lastFullList()) markFullList();
   const fullDue = !newest || process.env.FULL_LIST === "1" || Date.now() - lastFullList() > FULL_LIST_EVERY_MS;
+  log.info(fullDue ? "full round: whole SD card, every missing recording" : `regular round: recordings after ${fmtStamp(newest)}`);
   const all = await listAll(ref, fullDue ? "" : newest);
   if (fullDue) markFullList();
   sess = ref.sess;
