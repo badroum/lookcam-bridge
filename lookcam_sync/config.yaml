@@ -1,5 +1,5 @@
 name: LookCam Sync
-version: "0.3.1"
+version: "0.3.2"
 slug: lookcam_sync
 description: Downloads the LookCam recordings from the camera SD card to /media, locally, on a schedule
 url: https://github.com/badroum/lookcam-bridge
@@ -28,4 +28,4 @@ schema:
   interval_minutes: int(15,1440)
   keep_days: int(1,365)
   max_gb: int(1,200)
-  log_level: list(debug|info|warning|error)?
+  log_level: list(debug|info|warning|error)

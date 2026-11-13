@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.3.2 — 2026-11-13
+
+- L'option `log_level` apparaît maintenant directement dans l'onglet Configuration de l'add-on (`info` par défaut). Avant, Home Assistant la masquait parce qu'elle était facultative.
+- Le journal indique quand l'add-on démarre : version, adresse de la caméra, intervalle, niveau de journal, quota et durée de conservation. Il indique aussi « LookCam Sync stopping » à l'arrêt.
+- Chaque tour est numéroté et son type est précisé : « Round 1 (start-up, full catch-up) », puis « Round 2 (regular) »…
+- En fin de tour, le journal donne l'heure du tour suivant, par exemple « Next sync at 21:54 (in 60 min) ».
+
 ## 0.3.1 — 2026-11-13
 
 - Au démarrage de l'add-on, un premier tour lit toute la carte SD et récupère toutes les vidéos manquantes, de la plus ancienne à la plus récente. Viennent ensuite les tours réguliers, toutes les `interval_minutes`.
