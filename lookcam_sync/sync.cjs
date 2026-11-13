@@ -25,10 +25,28 @@ const MAX_BYTES = Number(process.env.MAX_GB || 0) * 1e9;
 const SKIP_FILE = process.env.SKIP_FILE || path.join(OUT_DIR, "already_on_pc.txt");
 const TZ = Math.round(-new Date().getTimezoneOffset() / 60);
 
-const log = (...a) => console.log(new Date().toISOString(), ...a);
+// Log levels (add-on option log_level): debug > info > warning > error. info shows the progress of a round
+// (SD listing every 10 pages, plan, each download with what is left); debug adds every page, every
+// skipped file and the download progress every 15 s.
+const LEVELS = { debug: 10, info: 20, warning: 30, error: 40 };
+const LOG_LEVEL = LEVELS[String(process.env.LOG_LEVEL || "info").toLowerCase()] || LEVELS.info;
+const emit = (lvl, tag) => (...a) => { if (LEVELS[lvl] >= LOG_LEVEL) console.log(new Date().toISOString(), tag, ...a); };
+const log = { debug: emit("debug", "DEBUG"), info: emit("info", "INFO"), warn: emit("warning", "WARN"), error: emit("error", "ERROR") };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- pure helpers ----------
+// "20261112052714" -> "12/11 05:27"
+function fmtStamp(st) {
+  return st && st.length >= 12 ? `${st.slice(6, 8)}/${st.slice(4, 6)} ${st.slice(8, 10)}:${st.slice(10, 12)}` : "?";
+}
+// 3725000 -> "1 h 02", 245000 -> "4 min", 35000 -> "35 s"
+function fmtDur(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} s`;
+  const m = Math.round(s / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`;
+}
+const fmtGB = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
 function clipInfo(item) {
   const m = /@(\d+)\.mp4$/.exec(item.patch || "");
   const durMs = m ? Number(m[1]) : null;
@@ -152,38 +170,89 @@ function openSession() {
   });
 }
 
-async function listAll(ref) {
+// "20261112052714" -> epoch ms (camera local time read as UTC: only differences are used)
+const stampMs = (st) => Date.UTC(+st.slice(0, 4), +st.slice(4, 6) - 1, +st.slice(6, 8), +st.slice(8, 10), +st.slice(10, 12), +st.slice(12, 14) || 0);
+
+// Newest recording we already have (fetched index or the PC's list): an incremental round only needs the
+// files recorded after it. Names look like 20261112-052714.mp4.
+function newestKnown(...sets) {
+  let best = "";
+  for (const set of sets) for (const name of set) {
+    const n = /(\d{8})-(\d{6})/.exec(name);
+    if (n && n[1] + n[2] > best) best = n[1] + n[2];
+  }
+  return best;
+}
+
+async function listAll(ref, stopAt = "") {
   // The camera list is newest-first and shifts while it records, so one pass can skip files:
-  // two full passes, union by path; enough at ~1 new file / 3 min.
+  // a full listing makes two passes, union by path; enough at ~1 new file / 3 min.
   // Some pages never get an answer (seen on 2026-11-11, page 22) and leave the session stuck:
   // skip such a page on a fresh session instead of dropping the whole round.
+  // stopAt (YYYYMMDDHHMMSS): incremental listing, stop one page after the first file at or before it,
+  // instead of reading the whole card (up to 200 pages, 20-30 min). "" = full listing.
   // ref.sess is replaced when the session is reopened.
   const all = [];
-  let total = 0, skipped = 0;
-  for (let pass = 0; pass < 2; pass++) for (let page = 0; page < 200; page++) {
-    let rep = null;
-    for (let t = 1; t <= 2; t++) {
-      try { rep = await ref.sess.cmd({ cmd: "GetTfVideoList", page, count: 10 }, 20000); break; }
-      catch (e) {
-        log(`list page ${page}: ${e.message}${t < 2 ? ", retry on a new session" : ", skipped"}`);
-        ref.sess.close();
-        await sleep(3000);
-        ref.sess = await openSession();
+  const t0 = Date.now();
+  let total = 0, skipped = 0, retries = 0, oldest = "", expected = 0, lastPage = 199;
+  // incremental: one pass is enough, a file missed by a shift is caught by the daily full listing
+  for (let pass = 0; pass < (stopAt ? 1 : 2); pass++) {
+    if (pass) log.info(`listing SD card: second pass over ${lastPage + 1} pages (catches files shifted while the camera records)`);
+    let reached = false;
+    for (let page = 0; page <= lastPage; page++) {
+      let rep = null;
+      for (let t = 1; t <= 2; t++) {
+        try { rep = await ref.sess.cmd({ cmd: "GetTfVideoList", page, count: 10 }, 20000); break; }
+        catch (e) {
+          retries++;
+          log.warn(`list page ${page}: ${e.message}${t < 2 ? ", retry on a new session" : ", skipped"}`);
+          ref.sess.close();
+          await sleep(3000);
+          ref.sess = await openSession();
+          log.debug("session reopened for the SD list");
+        }
+      }
+      if (!rep) {
+        skipped++;
+        if (skipped > 5) { log.warn("too many unanswered list pages, using the partial list"); return finish(); }
+        if (total && (page + 1) * 10 >= total + 10) break;
+        continue;
+      }
+      total = rep.allCount || total;
+      const v = rep.value || [];
+      all.push(...v);
+      const st = v.map((x) => clipInfo(x).stamp).filter(Boolean).sort();
+      if (st.length && (!oldest || st[0] < oldest)) oldest = st[0];
+      if (pass === 0 && !expected && total) {
+        // page estimate: whole card, or (incremental) from the time span of this first page
+        expected = Math.min(Math.ceil(total / 10), Math.ceil((2 * MAX_FILES) / 10), 200);
+        if (stopAt && st.length > 1) {
+          const perPage = (stampMs(st[st.length - 1]) - stampMs(st[0])) * (10 / (st.length - 1));
+          if (perPage > 0) expected = Math.min(expected, Math.ceil((stampMs(st[st.length - 1]) - stampMs(stopAt)) / perPage) + 2);
+        }
+        log.info(`listing SD card: the camera reports ${total} files; ` + (stopAt
+          ? `new since ${fmtStamp(stopAt)}, about ${Math.max(expected, 1)} pages to read`
+          : `full listing, about ${expected} pages to read`));
+      }
+      log.debug(`list page ${page}: ${v.length} files${st.length ? `, ${fmtStamp(st[0])} to ${fmtStamp(st[st.length - 1])}` : ""}`);
+      if (pass === 0 && (page + 1) % 10 === 0)
+        log.info(`listing SD card: page ${page + 1}/~${Math.max(expected, page + 1)}, ${all.length} files read, back to ${fmtStamp(oldest)}, ${fmtDur(Date.now() - t0)} so far`);
+      if (!v.length || (page + 1) * 10 >= total + 10 || all.length >= 2 * MAX_FILES) { if (pass === 0) lastPage = page; break; }
+      if (stopAt) {
+        if (reached) { if (pass === 0) lastPage = page; break; } // one extra page of margin, then stop
+        if (st.length && st[0] <= stopAt) reached = true;
       }
     }
-    if (!rep) {
-      skipped++;
-      if (skipped > 5) { log("too many unanswered list pages, using the partial list"); return finish(); }
-      if (total && (page + 1) * 10 >= total + 10) break;
-      continue;
-    }
-    total = rep.allCount || total;
-    const v = rep.value || [];
-    all.push(...v);
-    if (!v.length || (page + 1) * 10 >= total + 10 || all.length >= 2 * MAX_FILES) break;
   }
   return finish();
-  function finish() { return [...new Map(all.map((v) => [v.patch, v])).values()].map(clipInfo); }
+  function finish() {
+    const list = [...new Map(all.map((v) => [v.patch, v])).values()].map(clipInfo);
+    const st = list.map((c) => c.stamp).filter(Boolean).sort();
+    log.info(`SD list read in ${fmtDur(Date.now() - t0)}: ${list.length} files` +
+      (st.length ? `, from ${fmtStamp(st[0])} to ${fmtStamp(st[st.length - 1])}` : "") +
+      `, ${retries} page retries, ${skipped} pages skipped`);
+    return list;
+  }
 }
 
 function download(sess, clip, dest) {
@@ -207,12 +276,20 @@ function download(sess, clip, dest) {
       if (take > 0) { fs.writeSync(fd, data, 0, take); got += take; lastProgress = Date.now(); }
       if (got >= clip.size) done();
     });
+    let lastReport = Date.now(), reportedAt = got;
     const tick = setInterval(() => {
       if (sess.closed) return done(new Error("session closed"));
       if (Date.now() - lastProgress > STALL_MS) return done(new Error(`stalled at ${got}/${clip.size}`));
+      if (Date.now() - lastReport >= 15000) {
+        const rate = (got - reportedAt) / ((Date.now() - lastReport) / 1000);
+        log.debug(`  ${clip.name}: ${Math.floor((100 * got) / clip.size)} % (${(got / 1e6).toFixed(1)}/${(clip.size / 1e6).toFixed(1)} MB, ${(rate / 1e6).toFixed(2)} MB/s)`);
+        lastReport = Date.now(); reportedAt = got;
+      }
     }, 2000);
+    if (pos) log.debug(`  ${clip.name}: resuming at ${(pos / 1e6).toFixed(1)} MB`);
     sess.cmd({ cmd: "DownloadFile", patch: clip.patch, pos, state: 1, userid }).then(
       (rep) => {
+        log.debug(`  ${clip.name}: DownloadFile answered state=${rep.state}`);
         if (rep.state === 3) done(Object.assign(new Error("camera busy (state=3)"), { busy: true }));
         else if (rep.state !== 0) done(new Error("DownloadFile refused state=" + rep.state));
       },
@@ -233,6 +310,16 @@ function saveFetched(set) {
   fs.renameSync(STATE_FILE + ".tmp", STATE_FILE);
 }
 
+// time of the last full SD listing, kept next to the fetched index
+const FULL_LIST_FILE = STATE_FILE ? path.join(path.dirname(STATE_FILE), "last_full_list.txt") : "";
+const FULL_LIST_EVERY_MS = 24 * 3600 * 1000;
+function lastFullList() {
+  try { return Date.parse(fs.readFileSync(FULL_LIST_FILE, "utf8").trim()) || 0; } catch { return 0; }
+}
+function markFullList() {
+  if (FULL_LIST_FILE) try { fs.writeFileSync(FULL_LIST_FILE, new Date().toISOString()); } catch {}
+}
+
 function loadSkip() {
   try { return new Set(fs.readFileSync(SKIP_FILE, "utf8").split(/\r?\n/).map((l) => l.trim().split(/[\\/]/).pop()).filter(Boolean)); }
   catch { return new Set(); }
@@ -249,51 +336,80 @@ function dirBytes(dir) {
 async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const fetched = loadFetched();
-  if (!PWD) log("warning: no camera password (CAM_PASSWORD)");
+  const round0 = Date.now();
+  if (!PWD) log.warn("no camera password (CAM_PASSWORD)");
+  log.info(`camera ${CAM_IP}, storage budget ${MAX_BYTES ? MAX_BYTES / 1e9 + " GB" : "none"}, ${fetched.size} names in the fetched index`);
   let sess = await openSession();
-  log("session up");
+  log.info("session up");
   const ref = { sess };
-  const all = await listAll(ref);
-  sess = ref.sess;
+  // Incremental listing (only what was recorded after the newest file we already have), plus a full
+  // listing at least once a day to catch older gaps (a file that failed, a round cut short).
   const skip = loadSkip();
+  const newest = newestKnown(fetched, skip);
+  // first run of this version: no marker yet, start the 24 h count now instead of a long full listing
+  if (newest && !lastFullList()) markFullList();
+  const fullDue = !newest || process.env.FULL_LIST === "1" || Date.now() - lastFullList() > FULL_LIST_EVERY_MS;
+  const all = await listAll(ref, fullDue ? "" : newest);
+  if (fullDue) markFullList();
+  sess = ref.sess;
   const only = process.env.ONLY_DAY; // e.g. 2026-11-10 for tests
-  const wanted = (c) => (!only || c.day === only) && !fetched.has(c.name) && !skip.has(c.name);
   // every finished recording, whatever its length (set in the camera app), oldest first:
   // the SD card loops and overwrites its oldest files first. No duration = still being recorded.
-  const todo = all.filter((c) => c.durMs !== null && wanted(c))
-    .map((c) => ({ ...c, dir: path.join(OUT_DIR, c.day) }))
-    .sort((a, b) => a.stamp.localeCompare(b.stamp))
-    .filter((c) => !fs.existsSync(path.join(c.dir, c.name)));
-  log(`${all.length} files on SD, ${todo.length} to download`);
-  let busySince = 0;
-  outer: for (const c of todo) {
-    if (MAX_BYTES && dirBytes(OUT_DIR) + c.size > MAX_BYTES) {
-      log(`storage budget reached (${MAX_BYTES / 1e9} GB), the rest waits for the next round`);
-      break;
+  const count = { recording: 0, onPc: 0, fetched: 0, onShare: 0, otherDay: 0 };
+  const todo = [];
+  for (const c of all) {
+    const dir = path.join(OUT_DIR, c.day);
+    const why = c.durMs === null ? "recording" : only && c.day !== only ? "otherDay" : skip.has(c.name) ? "onPc"
+      : fetched.has(c.name) ? "fetched" : fs.existsSync(path.join(dir, c.name)) ? "onShare" : "";
+    if (why) { count[why]++; log.debug(`skip ${c.name}: ${why}`); } else todo.push({ ...c, dir });
+  }
+  todo.sort((a, b) => a.stamp.localeCompare(b.stamp));
+  const todoBytes = todo.reduce((n, c) => n + (c.size || 0), 0);
+  log.info(`${all.length} files listed, ${todo.length} to download (${fmtGB(todoBytes)}); ` +
+    `${count.onPc} already on the PC, ${count.fetched} already fetched, ${count.onShare} already on the share, ${count.recording} being recorded` +
+    (only ? `, ${count.otherDay} on other days` : ""));
+  if (todo.length) log.info(`to download: ${fmtStamp(todo[0].stamp)} to ${fmtStamp(todo[todo.length - 1].stamp)}, oldest first`);
+  let busySince = 0, nOk = 0, nFail = 0, bytesOk = 0, msOk = 0, stopped = "";
+  outer: for (let i = 0; i < todo.length; i++) {
+    const c = todo[i];
+    if (MAX_BYTES) {
+      const used = dirBytes(OUT_DIR);
+      if (used + c.size > MAX_BYTES) {
+        stopped = "storage budget";
+        log.info(`storage budget reached (${fmtGB(used)} used of ${MAX_BYTES / 1e9} GB), the rest waits for the PC to empty the share`);
+        break;
+      }
     }
     fs.mkdirSync(c.dir, { recursive: true });
     const dest = path.join(c.dir, c.name);
     if (fs.existsSync(dest)) continue;
+    log.debug(`get [${i + 1}/${todo.length}] ${c.name} ${(c.size / 1e6).toFixed(1)} MB`);
     for (let attempt = 1; attempt <= 3; ) {
       const t0 = Date.now();
       try {
-        if (sess.closed) { sess = await openSession(); log("session reopened"); }
+        if (sess.closed) { sess = await openSession(); log.info("session reopened"); }
         await download(sess, c, dest);
         busySince = 0;
         fetched.add(c.name);
         saveFetched(fetched);
-        log(`ok ${path.relative(OUT_DIR, dest)} ${(c.size / 1e6).toFixed(1)} MB in ${Math.round((Date.now() - t0) / 1000)} s`);
+        const ms = Date.now() - t0;
+        nOk++; bytesOk += c.size; msOk += ms;
+        const left = todo.slice(i + 1).reduce((n, x) => n + (x.size || 0), 0);
+        const eta = bytesOk ? (left * msOk) / bytesOk : 0;
+        log.info(`ok [${i + 1}/${todo.length}] ${path.relative(OUT_DIR, dest)} ${(c.size / 1e6).toFixed(1)} MB in ${Math.round(ms / 1000)} s` +
+          (i + 1 < todo.length ? `, ${todo.length - i - 1} left (${fmtGB(left)}, about ${fmtDur(eta)})` : ""));
         break;
       } catch (e) {
         if (e.busy) {
           // the camera still serves an earlier transfer: wait for it, do not count it as a failed attempt
           busySince ||= Date.now();
-          if (Date.now() - busySince > BUSY_MAX_MS) { log(`camera still busy after ${BUSY_MAX_MS / 60000} min, next round`); break outer; }
-          log(`camera busy, waiting ${BUSY_WAIT_MS / 1000} s`);
+          if (Date.now() - busySince > BUSY_MAX_MS) { stopped = "camera busy"; log.warn(`camera still busy after ${BUSY_MAX_MS / 60000} min, next round`); break outer; }
+          log.warn(`camera busy, waiting ${BUSY_WAIT_MS / 1000} s`);
           await sleep(BUSY_WAIT_MS); // keep the session open: closing and reopening does not free the slot sooner
           continue;
         }
-        log(`fail ${c.name} attempt ${attempt}: ${e.message}`);
+        log.warn(`fail ${c.name} attempt ${attempt}/3: ${e.message}`);
+        if (attempt === 3) nFail++;
         attempt++;
         sess.close();
         await sleep(attempt <= 3 ? 10000 : 3000);
@@ -302,10 +418,12 @@ async function main() {
   }
   saveFetched(fetched);
   sess.close();
-  log("done");
+  const left = todo.length - nOk - nFail;
+  log.info(`round done in ${fmtDur(Date.now() - round0)}: ${nOk} downloaded (${fmtGB(bytesOk)}), ${nFail} failed` +
+    (left > 0 ? `, ${left} left for the next round${stopped ? ` (${stopped})` : ""}` : ""));
 }
 
-module.exports = { clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes };
+module.exports = { clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes, fmtStamp, fmtDur, fmtGB, newestKnown };
 if (require.main === module) {
-  main().then(() => process.exit(0), (e) => { log("error: " + e.message); process.exit(1); });
+  main().then(() => process.exit(0), (e) => { log.error(e.message); process.exit(1); });
 }

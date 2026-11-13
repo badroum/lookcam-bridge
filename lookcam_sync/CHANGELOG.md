@@ -1,5 +1,15 @@
 # Journal des modifications
 
+## 0.3.1 — 2026-11-13
+
+- La liste de la carte SD n'est plus lue en entier à chaque tour. La caméra donne ses vidéos de la plus récente à la plus ancienne, donc la lecture s'arrête une page après la dernière vidéo déjà récupérée par l'add-on ou déjà présente sur le PC (`already_on_pc.txt`). En temps normal, un tour lit 1 à 3 pages au lieu de 200, soit quelques secondes au lieu de 20 à 30 min. Le journal annonce à l'avance le nombre de pages estimé.
+- Une lecture complète de la carte reste faite une fois par jour, pour rattraper un éventuel trou plus ancien (fichier en échec, tour interrompu). Au premier démarrage de cette version, le compteur de 24 h part de zéro : pas de lecture complète immédiate.
+- Nouvelle option `log_level` (`debug`, `info`, `warning`, `error` ; `info` par défaut) :
+  - `info` affiche l'avancement de la lecture de la liste toutes les 10 pages (page, nombre de fichiers lus, date atteinte, durée), le bilan de la liste, le plan du tour (à télécharger, déjà sur le PC, déjà récupérés, en cours d'enregistrement, période couverte), chaque téléchargement avec son rang (ex. `[12/250]`), ce qui reste et une estimation du temps restant, puis un bilan en fin de tour ;
+  - `debug` ajoute chaque page lue, chaque fichier ignoré avec sa raison et l'avancement du téléchargement en cours toutes les 15 s ;
+  - les reprises (page sans réponse, caméra occupée, échec) sont en `warning`.
+- Chaque ligne du journal indique son niveau (`INFO`, `WARN`, `ERROR`, `DEBUG`).
+
 ## 0.3.0 — 2026-11-11
 
 - L'option `continuous` est supprimée. Tous les fichiers de la carte SD sont récupérés, quelle que soit leur durée (réglée dans l'application de la caméra), du plus ancien au plus récent. Seul le fichier en cours d'enregistrement est ignoré.
