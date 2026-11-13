@@ -1,10 +1,13 @@
 #!/usr/bin/with-contenv bashio
 # Every <interval_minutes>: download new recordings from the camera SD card to /media/boite_aux_lettres/<day>/.
 # Then remove clips older than <keep_days> on this host only (the camera and the PC keep theirs).
+# Motions (stdin from Home Assistant): the covering segment goes to /media/boite_aux_lettres_mouvements/<day>/,
+# kept forever (outside the share the PC empties and outside the purge).
 export CAM_IP="$(bashio::config 'camera_ip')"
 export CAM_PASSWORD="$(bashio::config 'password')"
 export OUT_DIR="/media/boite_aux_lettres"
 export STATE_FILE="/data/fetched.json"   # clips already fetched (the PC may move them away)
+export MOTION_DIR="/media/boite_aux_lettres_mouvements"
 export MAX_GB="$(bashio::config 'max_gb')"
 # debug | info | warning | error (optional option: info when absent from an older configuration)
 LOG_LEVEL="info"
@@ -41,7 +44,25 @@ while true; do
   fi
   find "${OUT_DIR}" -type f \( -name '*.mp4' -o -name '*.part' \) -mtime +"${KEEP_DAYS}" -delete
   find "${OUT_DIR}" -mindepth 1 -type d -empty -delete
-  bashio::log.info "Next sync at $(date -d "@$(( $(date +%s) + INTERVAL ))" '+%H:%M') (in $(( INTERVAL / 60 )) min)"
-  sleep "${INTERVAL}" &
-  wait $!
+  NEXT=$(( $(date +%s) + INTERVAL ))
+  bashio::log.info "Next sync at $(date -d "@${NEXT}" '+%H:%M') (in $(( INTERVAL / 60 )) min)"
+  # Wait for the next round, but serve motions meanwhile: Home Assistant sends the motion time
+  # (YYYYMMDDHHMMSS, local time) with the service hassio.addon_stdin. A motion that arrives during a
+  # round waits in the stdin buffer until the round ends (one camera session at a time).
+  while [ "$(date +%s)" -lt "${NEXT}" ]; do
+    LINE=""
+    if read -r -t $(( NEXT - $(date +%s) > 0 ? NEXT - $(date +%s) : 1 )) LINE; then
+      AT="$(printf '%s' "${LINE}" | tr -cd '0-9')"
+      if [ "${#AT}" = "14" ]; then
+        bashio::log.info "Motion at ${AT}: fetching the segment that covers it"
+        MOTION_AT="${AT}" node /sync.cjs || bashio::log.warning "Motion ${AT}: segment not fetched"
+      else
+        bashio::log.warning "Ignored stdin input (YYYYMMDDHHMMSS expected): ${LINE}"
+      fi
+    elif [ $? -le 128 ]; then
+      # stdin closed (stdin not enabled): plain wait, interruptible by the stop signal
+      sleep $(( NEXT - $(date +%s) > 0 ? NEXT - $(date +%s) : 1 )) &
+      wait $!
+    fi
+  done
 done
