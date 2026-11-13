@@ -405,6 +405,15 @@ async function main() {
     fs.mkdirSync(c.dir, { recursive: true });
     const dest = path.join(c.dir, c.name);
     if (fs.existsSync(dest)) continue;
+    // already fetched for a motion (kept apart): copy it locally instead of downloading it again
+    const motionCopy = path.join(MOTION_DIR, c.day, c.name);
+    if (fs.existsSync(motionCopy) && fs.statSync(motionCopy).size === c.size) {
+      fs.copyFileSync(motionCopy, dest + ".part");
+      fs.renameSync(dest + ".part", dest);
+      fetched.add(c.name); saveFetched(fetched); nOk++;
+      log.info(`ok [${i + 1}/${todo.length}] ${path.relative(OUT_DIR, dest)} copied from the motion folder`);
+      continue;
+    }
     log.debug(`get [${i + 1}/${todo.length}] ${c.name} ${(c.size / 1e6).toFixed(1)} MB`);
     for (let attempt = 1; attempt <= 3; ) {
       const t0 = Date.now();
@@ -452,7 +461,108 @@ async function main() {
     (left > 0 ? `, ${left} left for the next round${stopped ? ` (${stopped})` : ""}` : ""));
 }
 
-module.exports = { clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes, fmtStamp, fmtDur, fmtGB, newestKnown, prevStamp };
+// ---------- motion round (add-on 0.4.0) ----------
+// Home Assistant sends the time of a motion (mailbox sensor) on the add-on stdin; run.sh calls this with
+// MOTION_AT=YYYYMMDDHHMMSS (camera local time). We wait until the segment that covers that time is finished
+// on the SD card, download it into MOTION_DIR/<day>/ (kept forever: outside the share the PC empties and
+// outside the purge), then fire the Home Assistant event lookcam_sync_mouvement with its path.
+const MOTION_DIR = process.env.MOTION_DIR || path.join(path.dirname(OUT_DIR), "boite_aux_lettres_mouvements");
+const MOTION_WAIT_MS = Number(process.env.MOTION_WAIT_MS || 12 * 60000); // longest wait for the segment to end
+const MOTION_POLL_MS = 60000;
+const MOTION_MARGIN_S = 20; // motion this close to the end of a segment: take the next segment too
+
+// Segments covering a motion time: the finished segment that contains it, plus the next one when the motion
+// is within MOTION_MARGIN_S of its end. Returns { clips, pending } where pending = the covering segment (or
+// the next one) is still being recorded.
+function segmentsFor(list, at) {
+  const t = stampMs(at);
+  const done = list.filter((c) => c.stamp && c.durMs !== null).sort((a, b) => a.stamp.localeCompare(b.stamp));
+  const recording = list.some((c) => c.durMs === null && c.stamp && stampMs(c.stamp) <= t);
+  const i = done.findIndex((c) => stampMs(c.stamp) <= t && t < stampMs(c.stamp) + c.durMs);
+  if (i < 0) return { clips: [], pending: recording || !done.some((c) => stampMs(c.stamp) > t) };
+  const c = done[i];
+  const clips = [c];
+  let pending = false;
+  if (stampMs(c.stamp) + c.durMs - t <= MOTION_MARGIN_S * 1000) {
+    if (done[i + 1]) clips.push(done[i + 1]);
+    else pending = true;
+  }
+  return { clips, pending };
+}
+
+async function fireEvent(type, data) {
+  const token = process.env.SUPERVISOR_TOKEN;
+  if (!token) { log.warn(`no SUPERVISOR_TOKEN, event ${type} not sent`); return; }
+  try {
+    const r = await fetch(`http://supervisor/core/api/events/${type}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!r.ok) log.warn(`event ${type}: HTTP ${r.status}`);
+    else log.info(`event ${type} sent`);
+  } catch (e) { log.warn(`event ${type}: ${e.message}`); }
+}
+
+async function motionMain(at) {
+  if (!/^\d{14}$/.test(at)) throw new Error(`bad motion time ${at} (YYYYMMDDHHMMSS expected)`);
+  const t0 = Date.now();
+  log.info(`motion at ${fmtStamp(at)}:${at.slice(12, 14)}: waiting for the segment that covers it`);
+  // list back to 10 min before the motion: a few pages at most
+  const from = new Date(stampMs(at) - 10 * 60000).toISOString().replace(/\D/g, "").slice(0, 14);
+  let sel = { clips: [], pending: true };
+  const ref = { sess: await openSession() };
+  try {
+    while (true) {
+      sel = segmentsFor(await listAll(ref, from), at);
+      if (!sel.pending && sel.clips.length) break;
+      if (Date.now() - t0 > MOTION_WAIT_MS) break;
+      log.info(`segment still being recorded, next check in ${MOTION_POLL_MS / 1000} s`);
+      ref.sess.close();
+      await sleep(MOTION_POLL_MS);
+      ref.sess = await openSession();
+    }
+    if (!sel.clips.length) {
+      log.warn(`no finished segment covers ${fmtStamp(at)} after ${fmtDur(Date.now() - t0)}`);
+      await fireEvent("lookcam_sync_mouvement", { heure: at, ok: false, erreur: "segment introuvable" });
+      return;
+    }
+    const files = [];
+    for (const c of sel.clips) {
+      const dir = path.join(MOTION_DIR, c.day);
+      fs.mkdirSync(dir, { recursive: true });
+      const dest = path.join(dir, c.name);
+      if (!fs.existsSync(dest)) {
+        for (let attempt = 1; ; attempt++) {
+          try {
+            if (ref.sess.closed) ref.sess = await openSession();
+            await download(ref.sess, c, dest);
+            log.info(`ok motion segment ${c.day}/${c.name} ${(c.size / 1e6).toFixed(1)} MB`);
+            break;
+          } catch (e) {
+            log.warn(`fail motion segment ${c.name} attempt ${attempt}/3: ${e.message}`);
+            if (attempt >= 3) throw e;
+            ref.sess.close();
+            await sleep(e.busy ? BUSY_WAIT_MS : 10000);
+          }
+        }
+      } else log.info(`motion segment ${c.day}/${c.name} already there`);
+      files.push(`${path.basename(MOTION_DIR)}/${c.day}/${c.name}`);
+    }
+    await fireEvent("lookcam_sync_mouvement", {
+      heure: at, ok: true, fichiers: files,
+      jour: sel.clips[0].day,
+      dossier: `${path.basename(MOTION_DIR)}/${sel.clips[0].day}`,
+    });
+  } catch (e) {
+    await fireEvent("lookcam_sync_mouvement", { heure: at, ok: false, erreur: e.message });
+    throw e;
+  } finally {
+    ref.sess.close();
+  }
+}
+
+module.exports = { segmentsFor, clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes, fmtStamp, fmtDur, fmtGB, newestKnown, prevStamp };
 if (require.main === module) {
-  main().then(() => process.exit(0), (e) => { log.error(e.message); process.exit(1); });
+  (process.env.MOTION_AT ? motionMain(process.env.MOTION_AT) : main()).then(() => process.exit(0), (e) => { log.error(e.message); process.exit(1); });
 }

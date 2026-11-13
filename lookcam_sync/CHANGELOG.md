@@ -1,5 +1,14 @@
 # Journal des modifications
 
+## 0.4.0 — 2026-11-13
+
+- Récupération sur mouvement : Home Assistant envoie l'heure d'un mouvement (capteur de la boîte aux lettres) à l'add-on avec le service `hassio.addon_stdin`, au format `AAAAMMJJHHMMSS` (heure locale). Exemple : `input: "{{ now().strftime('%Y%m%d%H%M%S') }}"`.
+- L'add-on attend que le segment qui couvre cette heure soit terminé sur la carte SD (12 min au plus, vérification chaque minute), puis le télécharge dans `/media/boite_aux_lettres_mouvements/AAAA-MM-JJ/`. Si le mouvement tombe dans les 20 dernières secondes d'un segment, le suivant est pris aussi.
+- Ce dossier est à part : il n'est ni purgé (`keep_days`), ni compté dans `max_gb`, ni vidé par le PC. Les vidéos de mouvement y restent indéfiniment.
+- Une fois la vidéo sur le Pi, l'add-on déclenche l'événement Home Assistant `lookcam_sync_mouvement` avec `heure`, `ok`, `fichiers` (chemins relatifs à `/media`), `jour` et `dossier`. En cas d'échec, `ok` vaut `false` et `erreur` donne la raison.
+- Le tour régulier copie depuis ce dossier, sans la retélécharger, une vidéo déjà récupérée pour un mouvement : le PC la reçoit comme les autres.
+- Un mouvement reçu pendant un tour régulier attend la fin de ce tour (une seule session avec la caméra à la fois).
+
 ## 0.3.2 — 2026-11-13
 
 - L'option `log_level` apparaît maintenant directement dans l'onglet Configuration de l'add-on (`info` par défaut). Avant, Home Assistant la masquait parce qu'elle était facultative.

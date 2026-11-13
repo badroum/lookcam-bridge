@@ -54,3 +54,18 @@ The add-on keeps the point up to which everything is fetched in `/data/complete_
 down to it, and older recordings still waiting (newest_first, storage budget) are not skipped.
 
 A PC can then copy the clips from the `media` Samba share and run the ROI motion analysis locally.
+
+### Motion segments (0.4.0)
+
+Home Assistant can send a motion time (`YYYYMMDDHHMMSS`, local time) on the add-on stdin:
+
+```yaml
+action: hassio.addon_stdin
+data:
+  addon: <slug>_lookcam_sync
+  input: "{{ now().strftime('%Y%m%d%H%M%S') }}"
+```
+
+The add-on waits until the segment covering that time is finished on the SD card, downloads it into
+`/media/boite_aux_lettres_mouvements/YYYY-MM-DD/` (never purged, outside `max_gb`, not emptied by the PC) and fires
+the event `lookcam_sync_mouvement` (`heure`, `ok`, `fichiers`, `jour`, `dossier`, or `erreur`).
