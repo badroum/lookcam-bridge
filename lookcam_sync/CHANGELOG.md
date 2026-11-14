@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.5.1 — 2026-11-14
+
+- Lecture complète de la carte SD (au démarrage et une fois par jour) : la deuxième passe n'est faite que si le nombre de fichiers annoncé par la caméra a changé pendant la première, ou si une page n'a pas répondu. Sinon, une seule passe suffit, ce qui fait gagner environ 1 min 30 au démarrage.
+- Le journal indique la raison de la deuxième passe, ou « no second pass needed ».
+
 ## 0.5.0 — 2026-11-14
 
 - Nouvelle option `pc_transfer` pour choisir comment le PC récupère les vidéos : `samba` (par défaut, comme avant, avec l'add-on Samba) ou `http` (serveur de fichiers intégré, plus léger sur un Raspberry Pi 3, l'add-on Samba peut alors être arrêté).
