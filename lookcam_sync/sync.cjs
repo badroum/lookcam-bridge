@@ -296,6 +296,8 @@ function download(sess, clip, dest) {
     let lastReport = Date.now(), reportedAt = got;
     const tick = setInterval(() => {
       if (sess.closed) return done(new Error("session closed"));
+      // a mailbox motion is waiting (0.5.2): pause this transfer (state 2, resumed later from the .part)
+      if (sess.preemptable && motionPending()) return done(Object.assign(new Error("motion pending"), { preempt: true }));
       if (Date.now() - lastProgress > STALL_MS) return done(Object.assign(new Error(`stalled at ${got}/${clip.size}`), { stalled: true, progressed: got > pos }));
       if (Date.now() - lastReport >= 15000) {
         const rate = (got - reportedAt) / ((Date.now() - lastReport) / 1000);
@@ -428,12 +430,14 @@ async function main() {
       log.info(`ok [${i + 1}/${todo.length}] ${path.relative(OUT_DIR, dest)} copied from the motion folder`);
       continue;
     }
+    if (motionPending()) { const r = { sess }; await serveMotions(r); sess = r.sess; }
     log.debug(`get [${i + 1}/${todo.length}] ${c.name} ${(c.size / 1e6).toFixed(1)} MB`);
     let drops = 0;
     const t0 = Date.now(); // whole time for this file, drops and reconnections included
     for (let attempt = 1; attempt <= 3; ) {
       try {
         if (sess.closed) { sess = await openSession(); log.info("session reopened"); }
+        sess.preemptable = true;
         await download(sess, c, dest);
         busySince = 0;
         fetched.add(c.name);
@@ -446,6 +450,12 @@ async function main() {
           (i + 1 < todo.length ? `, ${todo.length - i - 1} left (${fmtGB(left)}, about ${fmtDur(eta)})` : ""));
         break;
       } catch (e) {
+        if (e.preempt) {
+          // paused for a motion: serve it on the same session, then resume this file where it stopped
+          log.info(`${c.name}: paused for a mailbox motion`);
+          const r = { sess }; await serveMotions(r); sess = r.sess;
+          continue;
+        }
         if (e.busy) {
           // the camera still serves an earlier transfer: wait for it, do not count it as a failed attempt
           busySince ||= Date.now();
@@ -526,14 +536,41 @@ async function fireEvent(type, data) {
   } catch (e) { log.warn(`event ${type}: ${e.message}`); }
 }
 
-async function motionMain(at) {
+// Motion queue (0.5.2): run.sh reads the add-on stdin in the background and appends each motion time to
+// this file, so a motion no longer waits for the end of a round (a start-up catch-up can last hours).
+const MOTION_QUEUE = process.env.MOTION_QUEUE || (STATE_FILE ? path.join(path.dirname(STATE_FILE), "motion_queue") : "");
+function motionPending() {
+  try { return !!MOTION_QUEUE && fs.statSync(MOTION_QUEUE).size > 0; } catch { return false; }
+}
+// Takes the queued motion times (and empties the queue): oldest first, duplicates removed.
+function takeMotions() {
+  if (!MOTION_QUEUE) return [];
+  const work = MOTION_QUEUE + ".work";
+  try { fs.renameSync(MOTION_QUEUE, work); } catch { return []; }
+  let lines = [];
+  try { lines = fs.readFileSync(work, "utf8").split(/\r?\n/).map((l) => l.replace(/\D/g, "")).filter((l) => l.length === 14); } catch {}
+  try { fs.unlinkSync(work); } catch {}
+  return [...new Set(lines)].sort();
+}
+// Serves every queued motion on the session in ref (one camera session at a time), until the queue is empty.
+async function serveMotions(ref) {
+  for (let ats = takeMotions(); ats.length; ats = takeMotions()) {
+    for (const at of ats) {
+      try { await motionMain(at, ref); } catch (e) { log.warn(`motion ${at}: ${e.message}`); }
+    }
+  }
+}
+
+async function motionMain(at, shared = null) {
   if (!/^\d{14}$/.test(at)) throw new Error(`bad motion time ${at} (YYYYMMDDHHMMSS expected)`);
   const t0 = Date.now();
   log.info(`motion at ${fmtStamp(at)}:${at.slice(12, 14)}: waiting for the segment that covers it`);
   // list back to 10 min before the motion: a few pages at most
   const from = new Date(stampMs(at) - 10 * 60000).toISOString().replace(/\D/g, "").slice(0, 14);
   let sel = { clips: [], pending: true };
-  const ref = { sess: await openSession() };
+  const ref = shared || { sess: await openSession() };
+  if (ref.sess.closed) ref.sess = await openSession();
+  ref.sess.preemptable = false; // never pause a motion download for another motion
   try {
     while (true) {
       sel = segmentsFor(await listAll(ref, from), at);
@@ -558,6 +595,7 @@ async function motionMain(at) {
         for (let attempt = 1, drops = 0; ; attempt++) {
           try {
             if (ref.sess.closed) ref.sess = await openSession();
+            ref.sess.preemptable = false;
             await download(ref.sess, c, dest);
             log.info(`ok motion segment ${c.day}/${c.name} ${(c.size / 1e6).toFixed(1)} MB`);
             break;
@@ -586,11 +624,13 @@ async function motionMain(at) {
     await fireEvent("lookcam_sync_mouvement", { heure: at, ok: false, erreur: e.message });
     throw e;
   } finally {
-    ref.sess.close();
+    if (!shared) ref.sess.close();
   }
 }
 
-module.exports = { segmentsFor, clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes, fmtStamp, fmtDur, fmtGB, newestKnown, prevStamp };
+module.exports = { takeMotions, motionPending, segmentsFor, clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes, fmtStamp, fmtDur, fmtGB, newestKnown, prevStamp };
 if (require.main === module) {
-  (process.env.MOTION_AT ? motionMain(process.env.MOTION_AT) : main()).then(() => process.exit(0), (e) => { log.error(e.message); process.exit(1); });
+  (process.env.MOTION_AT ? motionMain(process.env.MOTION_AT)
+    : process.env.MOTION_SERVE === "1" ? (async () => { const r = { sess: { closed: true, close() {} } }; try { await serveMotions(r); } finally { r.sess.close(); } })()
+    : main()).then(() => process.exit(0), (e) => { log.error(e.message); process.exit(1); });
 }

@@ -8,6 +8,7 @@ export CAM_PASSWORD="$(bashio::config 'password')"
 export OUT_DIR="/media/boite_aux_lettres"
 export STATE_FILE="/data/fetched.json"   # clips already fetched (the PC may move them away)
 export MOTION_DIR="/media/boite_aux_lettres_mouvements"
+export MOTION_QUEUE="/data/motion_queue"  # motion times from Home Assistant, read by sync.cjs (0.5.2)
 export MAX_GB="$(bashio::config 'max_gb')"
 # debug | info | warning | error (optional option: info when absent from an older configuration)
 LOG_LEVEL="info"
@@ -24,7 +25,22 @@ mkdir -p "${OUT_DIR}"
 
 bashio::log.info "LookCam Sync ${ADDON_VERSION:-?} started: camera ${CAM_IP}, every $(( INTERVAL / 60 )) min, log level ${LOG_LEVEL}, ${DOWNLOAD_ORDER/_/ }, budget ${MAX_GB} GB, keep ${KEEP_DAYS} days"
 bashio::log.info "First round: full catch-up of every missing recording (${DOWNLOAD_ORDER/_/ }), then regular rounds"
-trap 'bashio::log.info "LookCam Sync stopping"; [ -n "${HTTP_PID:-}" ] && kill "${HTTP_PID}" 2>/dev/null; exit 0' TERM INT
+trap 'bashio::log.info "LookCam Sync stopping"; [ -n "${HTTP_PID:-}" ] && kill "${HTTP_PID}" 2>/dev/null; [ -n "${STDIN_PID:-}" ] && kill "${STDIN_PID}" 2>/dev/null; exit 0' TERM INT
+
+# Motions (0.5.2): Home Assistant sends the motion time (YYYYMMDDHHMMSS, local time) with the service
+# hassio.addon_stdin. A background reader queues it at once in ${MOTION_QUEUE}; sync.cjs serves the queue
+# between two files and pauses a download in progress for it, so a motion never waits for a round to end.
+exec 3<&0
+( while read -r LINE <&3; do
+    AT="$(printf '%s' "${LINE}" | tr -cd '0-9')"
+    if [ "${#AT}" = "14" ]; then
+      echo "${AT}" >> "${MOTION_QUEUE}"
+      bashio::log.info "Motion at ${AT} queued"
+    else
+      bashio::log.warning "Ignored stdin input (YYYYMMDDHHMMSS expected): ${LINE}"
+    fi
+  done ) &
+STDIN_PID=$!
 
 # How the PC fetches the recordings (option pc_transfer): samba (default: the Samba add-on shares /media)
 # or http (built-in file server below, in place of the Samba add-on; needs http_token, 16+ characters).
@@ -65,23 +81,12 @@ while true; do
   find "${OUT_DIR}" -mindepth 1 -type d -empty -delete
   NEXT=$(( $(date +%s) + INTERVAL ))
   bashio::log.info "Next sync at $(date -d "@${NEXT}" '+%H:%M') (in $(( INTERVAL / 60 )) min)"
-  # Wait for the next round, but serve motions meanwhile: Home Assistant sends the motion time
-  # (YYYYMMDDHHMMSS, local time) with the service hassio.addon_stdin. A motion that arrives during a
-  # round waits in the stdin buffer until the round ends (one camera session at a time).
+  # Wait for the next round, serving queued motions meanwhile (checked every 5 s).
   while [ "$(date +%s)" -lt "${NEXT}" ]; do
-    LINE=""
-    if read -r -t $(( NEXT - $(date +%s) > 0 ? NEXT - $(date +%s) : 1 )) LINE; then
-      AT="$(printf '%s' "${LINE}" | tr -cd '0-9')"
-      if [ "${#AT}" = "14" ]; then
-        bashio::log.info "Motion at ${AT}: fetching the segment that covers it"
-        MOTION_AT="${AT}" node /sync.cjs || bashio::log.warning "Motion ${AT}: segment not fetched"
-      else
-        bashio::log.warning "Ignored stdin input (YYYYMMDDHHMMSS expected): ${LINE}"
-      fi
-    elif [ $? -le 128 ]; then
-      # stdin closed (stdin not enabled): plain wait, interruptible by the stop signal
-      sleep $(( NEXT - $(date +%s) > 0 ? NEXT - $(date +%s) : 1 )) &
-      wait $!
+    if [ -s "${MOTION_QUEUE}" ]; then
+      MOTION_SERVE=1 node /sync.cjs || bashio::log.warning "Motion: segment not fetched"
     fi
+    sleep 5 &
+    wait $!
   done
 done

@@ -1,5 +1,14 @@
 # Journal des modifications
 
+## 0.5.2 — 2026-11-14
+
+- Un mouvement de la boîte aux lettres n'attend plus la fin du tour en cours. Avant, l'add-on ne lisait les demandes de Home Assistant qu'entre deux tours : pendant un rattrapage de plusieurs heures (après une mise à jour), aucune vidéo de mouvement n'était récupérée.
+- Les demandes reçues par `hassio.addon_stdin` sont lues en continu et mises en file d'attente dans `/data/motion_queue`.
+- Pendant un tour, la file est consultée avant chaque vidéo. Un téléchargement en cours est mis en pause proprement (state 2) dès qu'un mouvement arrive, le mouvement est servi sur la même session caméra, puis le téléchargement reprend là où il s'était arrêté (fichier `.part`).
+- Le téléchargement d'une vidéo de mouvement n'est jamais interrompu par un autre mouvement : les suivants attendent dans la file. Les doublons d'une même heure sont fusionnés.
+- Entre deux tours, la file est vérifiée toutes les 5 s.
+- Limite connue : pendant la lecture de la liste de la carte SD (quelques minutes au démarrage), le mouvement attend la fin de la lecture. Le segment de 3 min doit de toute façon être terminé avant d'être récupéré.
+
 ## 0.5.1 — 2026-11-14
 
 - Lecture complète de la carte SD (au démarrage et une fois par jour) : la deuxième passe n'est faite que si le nombre de fichiers annoncé par la caméra a changé pendant la première, ou si une page n'a pas répondu. Sinon, une seule passe suffit, ce qui fait gagner environ 1 min 30 au démarrage.
