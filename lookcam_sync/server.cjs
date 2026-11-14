@@ -1,10 +1,12 @@
 "use strict";
 // Small read/delete file server for the PC, in place of the Samba add-on (lighter on a Raspberry Pi 3).
 // LAN only, every request needs "Authorization: Bearer <http_token>". No dependency: Node's http module.
-//   GET  /list                 -> [{day, name, size, mtime}] finished recordings (no .part), oldest first
+//   GET  /list                 -> {files:[{day, name, size, mtime}], parts:["day/name"]} finished recordings
+//                                 oldest first, and the downloads in progress (.part)
 //   GET  /file/<day>/<name>    -> the recording, with Range support (resume after a drop)
-//   POST /done   {files:[{day,name,size}]} -> deletes those the PC has copied (only when the size matches)
-//   PUT  /have   text, one name per line   -> replaces already_on_pc.txt (names never fetched again)
+//   POST /done   {files:["day/name" | {day,name,size}]} -> deletes those the PC has copied (when a size is
+//                                 given, only if it matches), then the day folder once empty
+//   POST /have   {names:[...]}  (or PUT /have, text, one name per line) -> replaces already_on_pc.txt
 //   GET  /health               -> {ok:true} (no token needed)
 const http = require("http");
 const fs = require("fs");
@@ -46,17 +48,19 @@ function filePath(day, name) {
   return path.join(OUT_DIR, day, name);
 }
 function listAll() {
-  const out = [];
+  const files = [], parts = [];
   let days = [];
-  try { days = fs.readdirSync(OUT_DIR).filter((d) => DAY_RE.test(d)).sort(); } catch { return out; }
+  try { days = fs.readdirSync(OUT_DIR).filter((d) => DAY_RE.test(d)).sort(); } catch { return { files, parts }; }
   for (const day of days) {
     let names = [];
-    try { names = fs.readdirSync(path.join(OUT_DIR, day)).filter((n) => NAME_RE.test(n)).sort(); } catch { continue; }
+    try { names = fs.readdirSync(path.join(OUT_DIR, day)).sort(); } catch { continue; }
     for (const name of names) {
-      try { const st = fs.statSync(path.join(OUT_DIR, day, name)); out.push({ day, name, size: st.size, mtime: st.mtime.toISOString() }); } catch {}
+      if (name.endsWith(".part") && NAME_RE.test(name.slice(0, -5))) { parts.push(`${day}/${name.slice(0, -5)}`); continue; }
+      if (!NAME_RE.test(name)) continue;
+      try { const st = fs.statSync(path.join(OUT_DIR, day, name)); files.push({ day, name, size: st.size, mtime: st.mtime.toISOString() }); } catch {}
     }
   }
-  return out;
+  return { files, parts };
 }
 
 function serveFile(req, res, p) {
@@ -98,29 +102,34 @@ async function handle(req, res) {
     try { files = JSON.parse(await readBody(req)).files; } catch (e) { return send(res, e.code || 400, { error: e.message }); }
     if (!Array.isArray(files)) return send(res, 400, { error: "files[] expected" });
     const deleted = [], kept = [];
-    for (const f of files) {
+    for (let f of files) {
+      if (typeof f === "string") { const [day, name] = f.split("/"); f = { day, name }; }
       const p = f && filePath(String(f.day), String(f.name));
       let st = null;
       try { st = p && fs.statSync(p); } catch {}
       if (!st) { kept.push({ ...f, why: "not found" }); continue; }
-      if (st.size !== Number(f.size)) { kept.push({ ...f, why: `size ${st.size} on the Pi` }); continue; }
+      if (f.size !== undefined && st.size !== Number(f.size)) { kept.push({ ...f, why: `size ${st.size} on the Pi` }); continue; }
       try { fs.unlinkSync(p); deleted.push(`${f.day}/${f.name}`); } catch (e) { kept.push({ ...f, why: e.message }); }
     }
     for (const d of new Set(deleted.map((x) => x.split("/")[0]))) {
       try { if (!fs.readdirSync(path.join(OUT_DIR, d)).length) fs.rmdirSync(path.join(OUT_DIR, d)); } catch {}
     }
     if (deleted.length || kept.length) log("info", `PC has copied ${deleted.length} file(s), removed from the Pi${kept.length ? `; ${kept.length} kept` : ""}`);
-    return send(res, 200, { deleted, kept });
+    return send(res, 200, { deleted: deleted.length, files: deleted, kept });
   }
-  if (req.method === "PUT" && url.pathname === "/have") {
-    let text;
-    try { text = await readBody(req); } catch (e) { return send(res, e.code || 400, { error: e.message }); }
-    const names = [...new Set(text.split(/\r?\n/).map((l) => l.trim().split(/[\\/]/).pop()).filter((n) => NAME_RE.test(n)))];
+  if ((req.method === "PUT" || req.method === "POST") && url.pathname === "/have") {
+    let lines;
+    try {
+      const text = await readBody(req);
+      lines = req.method === "POST" ? JSON.parse(text).names : text.split(/\r?\n/);
+      if (!Array.isArray(lines)) throw new Error("names[] expected");
+    } catch (e) { return send(res, e.code || 400, { error: e.message }); }
+    const names = [...new Set(lines.map((l) => String(l).trim().split(/[\\/]/).pop()).filter((n) => NAME_RE.test(n)))];
     fs.mkdirSync(path.dirname(SKIP_FILE), { recursive: true });
     fs.writeFileSync(SKIP_FILE + ".tmp", names.join("\n") + "\n");
     fs.renameSync(SKIP_FILE + ".tmp", SKIP_FILE);
     log("info", `list of files already on the PC updated: ${names.length} names`);
-    return send(res, 200, { names: names.length });
+    return send(res, 200, { count: names.length });
   }
   send(res, 404, { error: "unknown route" });
 }

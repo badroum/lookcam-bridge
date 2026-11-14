@@ -74,5 +74,6 @@ the event `lookcam_sync_mouvement` (`heure`, `ok`, `fichiers`, `jour`, `dossier`
 
 Set `pc_transfer: http` and `http_token` (at least 16 characters) to let the PC fetch the recordings over HTTP instead of the Samba add-on.
 LAN only, `Authorization: Bearer <token>` on every request, port `http_port` (8099):
-`GET /list`, `GET /file/<day>/<name>` (Range supported), `POST /done {"files":[{day,name,size}]}` (deletes copied files
-whose size matches), `PUT /have` (one name per line, replaces `already_on_pc.txt`), `GET /health`.
+`GET /list` (`{files:[{day,name,size,mtime}], parts:["day/name"]}`), `GET /file/<day>/<name>` (Range supported),
+`POST /done {"files":["day/name" | {day,name,size}]}` (deletes copied files; with a size, only if it matches),
+`POST /have {"names":[...]}` or `PUT /have` (one name per line), both replace `already_on_pc.txt`, `GET /health`.
