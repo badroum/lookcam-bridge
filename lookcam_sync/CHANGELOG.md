@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.5.3 — 2026-11-14
+
+- Le rattrapage ne s'arrête plus pendant qu'un mouvement attend la fin de son segment. Avant, l'add-on restait en pause plusieurs minutes (le segment de 5 min doit être fermé par la caméra avant d'apparaître dans la liste).
+- Les mouvements en attente sont gardés dans une liste. La liste de la carte SD est relue toutes les 60 s pour chacun ; entre deux vérifications, les téléchargements du tour continuent.
+- La pause du téléchargement en cours (state 2, reprise sur le fichier `.part`) ne se fait plus que le temps d'une vérification ou du téléchargement du segment de mouvement.
+- Les mouvements encore en attente à la fin d'un tour sont remis dans la file et repris par la boucle d'attente entre deux tours.
+
 ## 0.5.2 — 2026-11-14
 
 - Un mouvement de la boîte aux lettres n'attend plus la fin du tour en cours. Avant, l'add-on ne lisait les demandes de Home Assistant qu'entre deux tours : pendant un rattrapage de plusieurs heures (après une mise à jour), aucune vidéo de mouvement n'était récupérée.

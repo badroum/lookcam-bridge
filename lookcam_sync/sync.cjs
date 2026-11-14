@@ -480,6 +480,7 @@ async function main() {
     }
   }
   saveFetched(fetched);
+  requeueWaiting();
   sess.close();
   // advance the watermark to just before the oldest recording still waiting (budget, busy camera), or to
   // the newest finished one listed when nothing waits. Files that failed 3 times do not hold it back:
@@ -539,7 +540,11 @@ async function fireEvent(type, data) {
 // Motion queue (0.5.2): run.sh reads the add-on stdin in the background and appends each motion time to
 // this file, so a motion no longer waits for the end of a round (a start-up catch-up can last hours).
 const MOTION_QUEUE = process.env.MOTION_QUEUE || (STATE_FILE ? path.join(path.dirname(STATE_FILE), "motion_queue") : "");
+// Motions motionWaiting for their segment to end (0.5.3): { at, since, next }. The round keeps downloading meanwhile
+// and checks the SD list again only when an entry is due (every MOTION_POLL_MS).
+const motionWaiting = [];
 function motionPending() {
+  if (motionWaiting.some((w) => w.next <= Date.now())) return true;
   try { return !!MOTION_QUEUE && fs.statSync(MOTION_QUEUE).size > 0; } catch { return false; }
 }
 // Takes the queued motion times (and empties the queue): oldest first, duplicates removed.
@@ -552,40 +557,59 @@ function takeMotions() {
   try { fs.unlinkSync(work); } catch {}
   return [...new Set(lines)].sort();
 }
-// Serves every queued motion on the session in ref (one camera session at a time), until the queue is empty.
-async function serveMotions(ref) {
-  for (let ats = takeMotions(); ats.length; ats = takeMotions()) {
-    for (const at of ats) {
-      try { await motionMain(at, ref); } catch (e) { log.warn(`motion ${at}: ${e.message}`); }
+// Puts the motions still motionWaiting back in the queue file (end of a round): the wait loop of run.sh serves them.
+function requeueWaiting() {
+  if (!motionWaiting.length || !MOTION_QUEUE) return;
+  fs.appendFileSync(MOTION_QUEUE, motionWaiting.map((w) => w.at).join("\n") + "\n");
+  log.info(`${motionWaiting.length} motion(s) still motionWaiting for their segment, handed over to the wait loop`);
+  motionWaiting.length = 0;
+}
+// Serves the motions on the session in ref (one camera session at a time). New queued motions join the
+// motionWaiting list; each due entry gets one SD listing: segment finished -> downloaded and event fired, still
+// recording -> checked again in MOTION_POLL_MS, while the caller (a round) goes on with its downloads.
+// blocking (between rounds): wait here until every motion is served.
+async function serveMotions(ref, blocking = false) {
+  while (true) {
+    for (const at of takeMotions()) {
+      if (!motionWaiting.some((w) => w.at === at)) {
+        motionWaiting.push({ at, since: Date.now(), next: 0 });
+        log.info(`motion at ${fmtStamp(at)}:${at.slice(12, 14)}: looking for the segment that covers it`);
+      }
+    }
+    for (const w of motionWaiting.filter((x) => x.next <= Date.now())) {
+      let r;
+      try { r = await motionStep(w.at, ref); } catch (e) { log.warn(`motion ${w.at}: ${e.message}`); r = "done"; }
+      if (r === "pending" && Date.now() - w.since > MOTION_WAIT_MS) {
+        log.warn(`no finished segment covers ${fmtStamp(w.at)} after ${fmtDur(Date.now() - w.since)}`);
+        await fireEvent("lookcam_sync_mouvement", { heure: w.at, ok: false, erreur: "segment introuvable" });
+        r = "done";
+      }
+      if (r === "pending") {
+        w.next = Date.now() + MOTION_POLL_MS;
+        log.info(`motion ${fmtStamp(w.at)}: segment still being recorded, next check in ${MOTION_POLL_MS / 1000} s` +
+          (blocking ? "" : ", downloads go on meanwhile"));
+      } else motionWaiting.splice(motionWaiting.indexOf(w), 1);
+    }
+    if (!blocking || (!motionWaiting.length && !motionPending())) return;
+    if (!motionPending()) {
+      // between rounds: nothing else to do, free the camera until the next check
+      ref.sess.close();
+      const next = Math.min(...motionWaiting.map((w) => w.next));
+      while (Date.now() < next && !motionPending()) await sleep(Math.min(5000, Math.max(0, next - Date.now())));
     }
   }
 }
 
-async function motionMain(at, shared = null) {
+// One check for one motion: lists the SD card back to 10 min before it. Returns "pending" while the covering
+// segment is still being recorded, "done" once it is downloaded into MOTION_DIR/<day>/ and the event fired.
+async function motionStep(at, ref) {
   if (!/^\d{14}$/.test(at)) throw new Error(`bad motion time ${at} (YYYYMMDDHHMMSS expected)`);
-  const t0 = Date.now();
-  log.info(`motion at ${fmtStamp(at)}:${at.slice(12, 14)}: waiting for the segment that covers it`);
-  // list back to 10 min before the motion: a few pages at most
   const from = new Date(stampMs(at) - 10 * 60000).toISOString().replace(/\D/g, "").slice(0, 14);
-  let sel = { clips: [], pending: true };
-  const ref = shared || { sess: await openSession() };
   if (ref.sess.closed) ref.sess = await openSession();
   ref.sess.preemptable = false; // never pause a motion download for another motion
+  const sel = segmentsFor(await listAll(ref, from), at);
+  if (sel.pending || !sel.clips.length) return "pending";
   try {
-    while (true) {
-      sel = segmentsFor(await listAll(ref, from), at);
-      if (!sel.pending && sel.clips.length) break;
-      if (Date.now() - t0 > MOTION_WAIT_MS) break;
-      log.info(`segment still being recorded, next check in ${MOTION_POLL_MS / 1000} s`);
-      ref.sess.close();
-      await sleep(MOTION_POLL_MS);
-      ref.sess = await openSession();
-    }
-    if (!sel.clips.length) {
-      log.warn(`no finished segment covers ${fmtStamp(at)} after ${fmtDur(Date.now() - t0)}`);
-      await fireEvent("lookcam_sync_mouvement", { heure: at, ok: false, erreur: "segment introuvable" });
-      return;
-    }
     const files = [];
     for (const c of sel.clips) {
       const dir = path.join(MOTION_DIR, c.day);
@@ -622,15 +646,21 @@ async function motionMain(at, shared = null) {
     });
   } catch (e) {
     await fireEvent("lookcam_sync_mouvement", { heure: at, ok: false, erreur: e.message });
-    throw e;
-  } finally {
-    if (!shared) ref.sess.close();
   }
+  return "done";
+}
+
+// Single motion, served to the end (MOTION_AT, manual tests).
+async function motionMain(at) {
+  fs.mkdirSync(path.dirname(MOTION_QUEUE || "."), { recursive: true });
+  if (MOTION_QUEUE) fs.appendFileSync(MOTION_QUEUE, at + "\n");
+  const ref = { sess: { closed: true, close() {} } };
+  try { await serveMotions(ref, true); } finally { ref.sess.close(); }
 }
 
 module.exports = { takeMotions, motionPending, segmentsFor, clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes, fmtStamp, fmtDur, fmtGB, newestKnown, prevStamp };
 if (require.main === module) {
   (process.env.MOTION_AT ? motionMain(process.env.MOTION_AT)
-    : process.env.MOTION_SERVE === "1" ? (async () => { const r = { sess: { closed: true, close() {} } }; try { await serveMotions(r); } finally { r.sess.close(); } })()
+    : process.env.MOTION_SERVE === "1" ? (async () => { const r = { sess: { closed: true, close() {} } }; try { await serveMotions(r, true); } finally { r.sess.close(); } })()
     : main()).then(() => process.exit(0), (e) => { log.error(e.message); process.exit(1); });
 }
