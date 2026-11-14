@@ -17,6 +17,7 @@ stdin: true
 homeassistant_api: true
 # host network: LAN discovery (UDP broadcast 32108) and P2P session need it
 host_network: true
+# pc_transfer: samba (Samba add-on) or http (built-in file server below)
 # http_port: file server for the PC (list, download with resume, delete once copied), LAN only, token
 map:
   - media:rw
@@ -28,6 +29,7 @@ options:
   max_gb: 4
   log_level: info
   download_order: oldest_first
+  pc_transfer: samba
   http_port: 8099
   http_token: ""
 schema:
@@ -38,5 +40,6 @@ schema:
   max_gb: int(1,200)
   log_level: list(debug|info|warning|error)
   download_order: list(oldest_first|newest_first)
+  pc_transfer: list(samba|http)
   http_port: port
   http_token: password

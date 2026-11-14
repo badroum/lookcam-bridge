@@ -72,7 +72,7 @@ the event `lookcam_sync_mouvement` (`heure`, `ok`, `fichiers`, `jour`, `dossier`
 
 ### File server for the PC (LookCam Sync 0.5.0)
 
-Set `http_token` (at least 16 characters) to let the PC fetch the recordings over HTTP instead of the Samba add-on.
+Set `pc_transfer: http` and `http_token` (at least 16 characters) to let the PC fetch the recordings over HTTP instead of the Samba add-on.
 LAN only, `Authorization: Bearer <token>` on every request, port `http_port` (8099):
 `GET /list`, `GET /file/<day>/<name>` (Range supported), `POST /done {"files":[{day,name,size}]}` (deletes copied files
 whose size matches), `PUT /have` (one name per line, replaces `already_on_pc.txt`), `GET /health`.

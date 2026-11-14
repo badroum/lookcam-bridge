@@ -2,14 +2,15 @@
 
 ## 0.5.0 — 2026-11-14
 
-- Serveur de fichiers intégré pour le PC, pour remplacer l'add-on Samba, trop lourd sur un Raspberry Pi 3. Il démarre seulement si l'option `http_token` est renseignée (16 caractères au moins). Le port se règle avec `http_port` (8099 par défaut). Il n'écoute que sur le réseau local, et chaque requête doit porter l'en-tête `Authorization: Bearer <jeton>`.
+- Nouvelle option `pc_transfer` pour choisir comment le PC récupère les vidéos : `samba` (par défaut, comme avant, avec l'add-on Samba) ou `http` (serveur de fichiers intégré, plus léger sur un Raspberry Pi 3, l'add-on Samba peut alors être arrêté).
+- Le serveur de fichiers démarre seulement avec `pc_transfer: http` et un `http_token` d'au moins 16 caractères. Le port se règle avec `http_port` (8099 par défaut). Il n'écoute que sur le réseau local, et chaque requête doit porter l'en-tête `Authorization: Bearer <jeton>`.
 - Routes :
   - `GET /list` : liste des vidéos terminées (`day`, `name`, `size`, `mtime`) ;
   - `GET /file/<jour>/<nom>` : téléchargement, avec reprise (`Range`) ;
   - `POST /done` avec `{"files":[{"day","name","size"}]}` : supprime du Pi les vidéos que le PC a copiées, seulement si la taille correspond ;
   - `PUT /have` (un nom par ligne) : remplace `already_on_pc.txt` ;
   - `GET /health` : test sans jeton.
-- Sans `http_token`, rien ne change : le partage Samba reste utilisable.
+- Avec `pc_transfer: samba`, rien ne change.
 
 ## 0.4.1 — 2026-11-14
 
