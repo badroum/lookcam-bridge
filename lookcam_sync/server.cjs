@@ -7,6 +7,7 @@
 //   POST /done   {files:["day/name" | {day,name,size}]} -> deletes those the PC has copied (when a size is
 //                                 given, only if it matches), then the day folder once empty
 //   POST /have   {names:[...]}  (or PUT /have, text, one name per line) -> replaces already_on_pc.txt
+//   GET  /status               -> sync status (round, phase, behind_files, behind_min, next_at...)
 //   GET  /health               -> {ok:true} (no token needed)
 const http = require("http");
 const fs = require("fs");
@@ -17,6 +18,7 @@ const PORT = Number(process.env.HTTP_PORT || 8099);
 const TOKEN = process.env.HTTP_TOKEN || "";
 const OUT_DIR = process.env.OUT_DIR || "/media/boite_aux_lettres";
 const SKIP_FILE = process.env.SKIP_FILE || path.join(OUT_DIR, "already_on_pc.txt");
+const STATUS_FILE = process.env.STATUS_FILE || "/data/status.json";
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const NAME_RE = /^\d{8}-\d{6}\.mp4$/;
 const MAX_BODY = 4 * 1024 * 1024;
@@ -93,6 +95,10 @@ async function handle(req, res) {
   if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true });
   if (!authorized(req)) { log("warn", `refused ${req.method} ${url.pathname} from ${req.socket.remoteAddress}`); return send(res, 401, { error: "unauthorized" }); }
   if (req.method === "GET" && url.pathname === "/list") return send(res, 200, listAll());
+  if (req.method === "GET" && url.pathname === "/status") {
+    // written by sync.cjs (0.5.4): round, phase, recordings still to fetch, minutes behind the camera, next round
+    try { return send(res, 200, JSON.parse(fs.readFileSync(STATUS_FILE, "utf8"))); } catch { return send(res, 200, {}); }
+  }
   if ((req.method === "GET" || req.method === "HEAD") && parts[0] === "file" && parts.length === 3) {
     const p = filePath(parts[1], parts[2]);
     return p ? serveFile(req, res, p) : send(res, 400, { error: "bad name" });

@@ -24,7 +24,7 @@ KEEP_DAYS="$(bashio::config 'keep_days')"
 mkdir -p "${OUT_DIR}"
 
 bashio::log.info "LookCam Sync ${ADDON_VERSION:-?} started: camera ${CAM_IP}, every $(( INTERVAL / 60 )) min, log level ${LOG_LEVEL}, ${DOWNLOAD_ORDER/_/ }, budget ${MAX_GB} GB, keep ${KEEP_DAYS} days"
-bashio::log.info "First round: full catch-up of every missing recording (${DOWNLOAD_ORDER/_/ }), then regular rounds"
+bashio::log.info "First round: catch-up of every recording made since the last one fetched (${DOWNLOAD_ORDER/_/ }), then regular rounds; full SD listing once a day"
 trap 'bashio::log.info "LookCam Sync stopping"; [ -n "${HTTP_PID:-}" ] && kill "${HTTP_PID}" 2>/dev/null; [ -n "${STDIN_PID:-}" ] && kill "${STDIN_PID}" 2>/dev/null; exit 0' TERM INT
 
 # Motions (0.5.2): Home Assistant sends the motion time (YYYYMMDDHHMMSS, local time) with the service
@@ -68,19 +68,30 @@ ROUND=0
 while true; do
   ROUND=$(( ROUND + 1 ))
   if [ "${FULL_LIST}" = "1" ]; then
-    bashio::log.info "Round ${ROUND} (start-up, full catch-up) from ${CAM_IP}"
+    bashio::log.info "Round ${ROUND} (start-up catch-up) from ${CAM_IP}"
   else
     bashio::log.info "Round ${ROUND} (regular) from ${CAM_IP}"
   fi
-  if FULL_LIST="${FULL_LIST}" node /sync.cjs; then
+  ROUND_START=$(date +%s)
+  if ROUND="${ROUND}" FULL_LIST="${FULL_LIST}" node /sync.cjs; then
     FULL_LIST=0
   else
     bashio::log.warning "Round ${ROUND} ended with an error, retry next round"
   fi
   find "${OUT_DIR}" -type f \( -name '*.mp4' -o -name '*.part' \) -mtime +"${KEEP_DAYS}" -delete
   find "${OUT_DIR}" -mindepth 1 -type d -empty -delete
-  NEXT=$(( $(date +%s) + INTERVAL ))
-  bashio::log.info "Next sync at $(date -d "@${NEXT}" '+%H:%M') (in $(( INTERVAL / 60 )) min)"
+  # A long round (a catch-up) only fetches what was listed when it started: the recordings made meanwhile
+  # wait for the next round. When the round lasted more than half the interval, start the next one at once
+  # (after 1 min) instead of waiting the whole interval; regular short rounds keep the interval.
+  ROUND_S=$(( $(date +%s) - ROUND_START ))
+  if [ "${ROUND_S}" -gt $(( INTERVAL / 2 )) ]; then
+    NEXT=$(( $(date +%s) + 60 ))
+    bashio::log.info "Round ${ROUND} took $(( ROUND_S / 60 )) min: recordings made meanwhile are fetched now, next sync at $(date -d "@${NEXT}" '+%H:%M') (in 1 min)"
+  else
+    NEXT=$(( $(date +%s) + INTERVAL ))
+    bashio::log.info "Next sync at $(date -d "@${NEXT}" '+%H:%M') (in $(( INTERVAL / 60 )) min)"
+  fi
+  STATUS_NEXT="${NEXT}" node /sync.cjs || true
   # Wait for the next round, serving queued motions meanwhile (checked every 5 s).
   while [ "$(date +%s)" -lt "${NEXT}" ]; do
     if [ -s "${MOTION_QUEUE}" ]; then
