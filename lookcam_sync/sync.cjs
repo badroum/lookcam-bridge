@@ -14,7 +14,12 @@ const CAM_IP = process.env.CAM_IP || "192.168.1.42";
 const PWD = process.env.CAM_PASSWORD || "";
 const OUT_DIR = process.env.OUT_DIR || path.join(process.env.USERPROFILE || ".", "Documents", "Boite_aux_lettres");
 const MAX_FILES = Number(process.env.MAX_FILES || 1000);
-const STALL_MS = 30000;
+// No data for this long = the transfer has dropped: close the session and resume at the same byte.
+// The camera link drops a few times an hour; a fresh session usually restores full speed at once.
+const STALL_MS = 15000;
+// An attempt that moved the file forward before dropping is not counted as a failure, up to this many
+// drops per file (then the usual 3 attempts apply).
+const MAX_DROPS = 20;
 const BUSY_WAIT_MS = 60000; // camera answered state=3 (still sending an earlier file): wait this long
 const BUSY_MAX_MS = 10 * 60000; // give up the round after this much busy time
 // Names already fetched. Lets the consumer (the PC) move clips away without them being downloaded again.
@@ -282,7 +287,7 @@ function download(sess, clip, dest) {
     let lastReport = Date.now(), reportedAt = got;
     const tick = setInterval(() => {
       if (sess.closed) return done(new Error("session closed"));
-      if (Date.now() - lastProgress > STALL_MS) return done(new Error(`stalled at ${got}/${clip.size}`));
+      if (Date.now() - lastProgress > STALL_MS) return done(Object.assign(new Error(`stalled at ${got}/${clip.size}`), { stalled: true, progressed: got > pos }));
       if (Date.now() - lastReport >= 15000) {
         const rate = (got - reportedAt) / ((Date.now() - lastReport) / 1000);
         log.debug(`  ${clip.name}: ${Math.floor((100 * got) / clip.size)} % (${(got / 1e6).toFixed(1)}/${(clip.size / 1e6).toFixed(1)} MB, ${(rate / 1e6).toFixed(2)} MB/s)`);
@@ -415,8 +420,9 @@ async function main() {
       continue;
     }
     log.debug(`get [${i + 1}/${todo.length}] ${c.name} ${(c.size / 1e6).toFixed(1)} MB`);
+    let drops = 0;
+    const t0 = Date.now(); // whole time for this file, drops and reconnections included
     for (let attempt = 1; attempt <= 3; ) {
-      const t0 = Date.now();
       try {
         if (sess.closed) { sess = await openSession(); log.info("session reopened"); }
         await download(sess, c, dest);
@@ -439,11 +445,18 @@ async function main() {
           await sleep(BUSY_WAIT_MS); // keep the session open: closing and reopening does not free the slot sooner
           continue;
         }
+        sess.close();
+        if (e.stalled && e.progressed && drops < MAX_DROPS) {
+          // dropped after making progress: reconnect at once and resume, not a failed attempt
+          drops++;
+          log.warn(`${c.name}: transfer dropped (${e.message}), reconnecting and resuming (drop ${drops})`);
+          await sleep(1000);
+          continue;
+        }
         log.warn(`fail ${c.name} attempt ${attempt}/3: ${e.message}`);
         if (attempt === 3) { nFail++; failed.add(c.name); }
         attempt++;
-        sess.close();
-        await sleep(attempt <= 3 ? 10000 : 3000);
+        await sleep(attempt > 3 ? 3000 : e.stalled ? 1000 : 10000);
       }
     }
   }
@@ -533,17 +546,23 @@ async function motionMain(at) {
       fs.mkdirSync(dir, { recursive: true });
       const dest = path.join(dir, c.name);
       if (!fs.existsSync(dest)) {
-        for (let attempt = 1; ; attempt++) {
+        for (let attempt = 1, drops = 0; ; attempt++) {
           try {
             if (ref.sess.closed) ref.sess = await openSession();
             await download(ref.sess, c, dest);
             log.info(`ok motion segment ${c.day}/${c.name} ${(c.size / 1e6).toFixed(1)} MB`);
             break;
           } catch (e) {
+            ref.sess.close();
+            if (e.stalled && e.progressed && drops < MAX_DROPS) {
+              drops++; attempt--; // dropped after progress: resume at once, not a failed attempt
+              log.warn(`motion segment ${c.name}: transfer dropped, reconnecting and resuming (drop ${drops})`);
+              await sleep(1000);
+              continue;
+            }
             log.warn(`fail motion segment ${c.name} attempt ${attempt}/3: ${e.message}`);
             if (attempt >= 3) throw e;
-            ref.sess.close();
-            await sleep(e.busy ? BUSY_WAIT_MS : 10000);
+            await sleep(e.busy ? BUSY_WAIT_MS : e.stalled ? 1000 : 10000);
           }
         }
       } else log.info(`motion segment ${c.day}/${c.name} already there`);
