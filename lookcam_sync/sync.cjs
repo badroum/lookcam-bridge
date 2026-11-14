@@ -193,8 +193,9 @@ function newestKnown(...sets) {
 }
 
 async function listAll(ref, stopAt = "") {
-  // The camera list is newest-first and shifts while it records, so one pass can skip files:
-  // a full listing makes two passes, union by path; enough at ~1 new file / 3 min.
+  // The camera list is newest-first and shifts while it records, so one pass can skip files. A full
+  // listing makes a second pass (union by path) only when the card changed during the first one (the file
+  // count it reports moved) or a page went unanswered; otherwise one pass is complete.
   // Some pages never get an answer (seen on 2026-11-11, page 22) and leave the session stuck:
   // skip such a page on a fresh session instead of dropping the whole round.
   // stopAt (YYYYMMDDHHMMSS): incremental listing, stop one page after the first file at or before it,
@@ -202,10 +203,17 @@ async function listAll(ref, stopAt = "") {
   // ref.sess is replaced when the session is reopened.
   const all = [];
   const t0 = Date.now();
-  let total = 0, skipped = 0, retries = 0, oldest = "", expected = 0, lastPage = 199;
+  let total = 0, firstTotal = 0, skipped = 0, retries = 0, oldest = "", expected = 0, lastPage = 199;
   // incremental: one pass is enough, a file missed by a shift is caught by the daily full listing
   for (let pass = 0; pass < (stopAt ? 1 : 2); pass++) {
-    if (pass) log.info(`listing SD card: second pass over ${lastPage + 1} pages (catches files shifted while the camera records)`);
+    if (pass) {
+      if (total === firstTotal && !skipped) {
+        log.info(`listing SD card: ${total} files before and after the pass, no second pass needed`);
+        break;
+      }
+      log.info(`listing SD card: second pass over ${lastPage + 1} pages (` +
+        (skipped ? `${skipped} page(s) unanswered` : `the card went from ${firstTotal} to ${total} files during the pass`) + ")");
+    }
     let reached = false;
     for (let page = 0; page <= lastPage; page++) {
       let rep = null;
@@ -227,6 +235,7 @@ async function listAll(ref, stopAt = "") {
         continue;
       }
       total = rep.allCount || total;
+      if (!firstTotal) firstTotal = total;
       const v = rep.value || [];
       all.push(...v);
       const st = v.map((x) => clipInfo(x).stamp).filter(Boolean).sort();
