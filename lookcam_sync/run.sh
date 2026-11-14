@@ -24,7 +24,26 @@ mkdir -p "${OUT_DIR}"
 
 bashio::log.info "LookCam Sync ${ADDON_VERSION:-?} started: camera ${CAM_IP}, every $(( INTERVAL / 60 )) min, log level ${LOG_LEVEL}, ${DOWNLOAD_ORDER/_/ }, budget ${MAX_GB} GB, keep ${KEEP_DAYS} days"
 bashio::log.info "First round: full catch-up of every missing recording (${DOWNLOAD_ORDER/_/ }), then regular rounds"
-trap 'bashio::log.info "LookCam Sync stopping"; exit 0' TERM INT
+trap 'bashio::log.info "LookCam Sync stopping"; [ -n "${HTTP_PID:-}" ] && kill "${HTTP_PID}" 2>/dev/null; exit 0' TERM INT
+
+# How the PC fetches the recordings (option pc_transfer): samba (default: the Samba add-on shares /media)
+# or http (built-in file server below, in place of the Samba add-on; needs http_token, 16+ characters).
+PC_TRANSFER="samba"
+if bashio::config.has_value 'pc_transfer'; then PC_TRANSFER="$(bashio::config 'pc_transfer')"; fi
+export HTTP_PORT="$(bashio::config 'http_port')"
+export HTTP_TOKEN=""
+if bashio::config.has_value 'http_token'; then HTTP_TOKEN="$(bashio::config 'http_token')"; fi
+if [ "${PC_TRANSFER}" = "http" ]; then
+  if [ "${#HTTP_TOKEN}" -ge 16 ]; then
+    bashio::log.info "PC transfer: built-in file server on port ${HTTP_PORT} (the Samba add-on can be stopped)"
+    ( while true; do node /server.cjs; bashio::log.warning "file server stopped, restarting in 5 s"; sleep 5; done ) &
+    HTTP_PID=$!
+  else
+    bashio::log.warning "PC transfer http: http_token missing or shorter than 16 characters, file server not started"
+  fi
+else
+  bashio::log.info "PC transfer: Samba add-on (file server off)"
+fi
 
 # First round after start-up: full SD listing, every missing recording (oldest first).
 # Then the regular rounds every <interval_minutes>, incremental (plus one full listing a day).
