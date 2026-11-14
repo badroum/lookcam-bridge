@@ -72,6 +72,7 @@ while true; do
   else
     bashio::log.info "Round ${ROUND} (regular) from ${CAM_IP}"
   fi
+  ROUND_START=$(date +%s)
   if FULL_LIST="${FULL_LIST}" node /sync.cjs; then
     FULL_LIST=0
   else
@@ -79,8 +80,17 @@ while true; do
   fi
   find "${OUT_DIR}" -type f \( -name '*.mp4' -o -name '*.part' \) -mtime +"${KEEP_DAYS}" -delete
   find "${OUT_DIR}" -mindepth 1 -type d -empty -delete
-  NEXT=$(( $(date +%s) + INTERVAL ))
-  bashio::log.info "Next sync at $(date -d "@${NEXT}" '+%H:%M') (in $(( INTERVAL / 60 )) min)"
+  # A long round (a catch-up) only fetches what was listed when it started: the recordings made meanwhile
+  # wait for the next round. When the round lasted more than half the interval, start the next one at once
+  # (after 1 min) instead of waiting the whole interval; regular short rounds keep the interval.
+  ROUND_S=$(( $(date +%s) - ROUND_START ))
+  if [ "${ROUND_S}" -gt $(( INTERVAL / 2 )) ]; then
+    NEXT=$(( $(date +%s) + 60 ))
+    bashio::log.info "Round ${ROUND} took $(( ROUND_S / 60 )) min: recordings made meanwhile are fetched now, next sync at $(date -d "@${NEXT}" '+%H:%M') (in 1 min)"
+  else
+    NEXT=$(( $(date +%s) + INTERVAL ))
+    bashio::log.info "Next sync at $(date -d "@${NEXT}" '+%H:%M') (in $(( INTERVAL / 60 )) min)"
+  fi
   # Wait for the next round, serving queued motions meanwhile (checked every 5 s).
   while [ "$(date +%s)" -lt "${NEXT}" ]; do
     if [ -s "${MOTION_QUEUE}" ]; then

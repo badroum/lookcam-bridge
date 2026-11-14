@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.5.4 — 2026-11-14
+
+- Enchaînement après un long tour : un tour ne récupère que les vidéos présentes au moment où il a lu la carte. Après un rattrapage de plusieurs heures, les vidéos enregistrées pendant ce temps attendaient en plus l'intervalle complet, si bien que la synchro semblait arrêtée. Désormais, si un tour a duré plus de la moitié de l'intervalle, le suivant démarre au bout d'une minute. Les tours réguliers, courts, gardent l'intervalle normal.
+- Le journal l'indique : « Round N took X min: recordings made meanwhile are fetched now, next sync at HH:MM (in 1 min) ».
+
 ## 0.5.3 — 2026-11-14
 
 - Le rattrapage ne s'arrête plus pendant qu'un mouvement attend la fin de son segment. Avant, l'add-on restait en pause plusieurs minutes (le segment de 5 min doit être fermé par la caméra avant d'apparaître dans la liste).
