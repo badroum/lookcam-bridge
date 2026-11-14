@@ -4,6 +4,12 @@
 
 - Enchaînement après un long tour : un tour ne récupère que les vidéos présentes au moment où il a lu la carte. Après un rattrapage de plusieurs heures, les vidéos enregistrées pendant ce temps attendaient en plus l'intervalle complet, si bien que la synchro semblait arrêtée. Désormais, si un tour a duré plus de la moitié de l'intervalle, le suivant démarre au bout d'une minute. Les tours réguliers, courts, gardent l'intervalle normal.
 - Le journal l'indique : « Round N took X min: recordings made meanwhile are fetched now, next sync at HH:MM (in 1 min) ».
+- Démarrage plus rapide : au démarrage ou après une mise à jour, l'add-on ne relit plus toute la carte SD (environ 6 min). Il lit la liste seulement jusqu'à la dernière vidéo récupérée, grâce au repère `complete_until.txt`. La lecture complète reste faite une fois par jour, ou quand rien n'est encore connu.
+- Indicateurs de synchro :
+  - le journal indique à la fin de chaque tour « status: up to date » ou « status: N recording(s) still to fetch, X min behind the camera » ;
+  - deux capteurs Home Assistant, mis à jour au plus une fois par minute pendant un tour : `sensor.lookcam_sync_retard` (minutes de retard sur la caméra) et `sensor.lookcam_sync_en_attente` (vidéos à récupérer). Attributs : à jour, phase, tour, type de tour, dernière vidéo récupérée, dernière vidéo sur la caméra, fin estimée, échecs, dernière erreur, prochain tour, version ;
+  - nouvelle route `GET /status` (avec jeton) sur le serveur de fichiers, pour le PC.
+- Ces capteurs sont recréés par l'add-on : après un redémarrage de Home Assistant, ils réapparaissent au tour suivant.
 
 ## 0.5.3 — 2026-11-14
 

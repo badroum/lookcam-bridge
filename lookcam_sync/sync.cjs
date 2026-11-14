@@ -369,6 +369,47 @@ function dirBytes(dir) {
   return n;
 }
 
+// Status (0.5.4): /data/status.json for the PC (GET /status on the file server) and Home Assistant sensors
+// sensor.lookcam_sync_retard (minutes behind the camera) and sensor.lookcam_sync_en_attente (recordings to
+// fetch), pushed at most once a minute during a round and at every phase change.
+const STATUS_FILE = STATE_FILE ? path.join(path.dirname(STATE_FILE), "status.json") : "";
+let lastPush = 0;
+function loadStatus() { try { return JSON.parse(fs.readFileSync(STATUS_FILE, "utf8")); } catch { return {}; } }
+async function pushStatus(st, force = false) {
+  st.version = process.env.ADDON_VERSION || "";
+  st.updated = new Date().toISOString();
+  st.up_to_date = st.phase === "idle" && !st.behind_files;
+  if (STATUS_FILE) try { fs.writeFileSync(STATUS_FILE + ".tmp", JSON.stringify(st)); fs.renameSync(STATUS_FILE + ".tmp", STATUS_FILE); } catch {}
+  if (!force && Date.now() - lastPush < 60000) return;
+  lastPush = Date.now();
+  const token = process.env.SUPERVISOR_TOKEN;
+  if (!token) return;
+  const fmt = (x) => (x ? fmtStamp(x) : null);
+  const attrs = {
+    a_jour: st.up_to_date, phase: st.phase, tour: st.round, type_de_tour: st.kind, videos_en_attente: st.behind_files,
+    derniere_video_recuperee: fmt(st.newest_fetched || st.complete_until), derniere_video_camera: fmt(st.newest_on_card),
+    fin_estimee_min: st.eta_min ?? null, echecs: st.failed, derniere_erreur: st.last_error || null,
+    prochain_tour: st.next_at || null, version: st.version,
+  };
+  const set = async (id, state, extra) => {
+    try {
+      const r = await fetch(`http://supervisor/core/api/states/${id}`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ state, attributes: { ...attrs, ...extra } }),
+      });
+      if (!r.ok) log.debug(`sensor ${id}: HTTP ${r.status}`);
+    } catch (e) { log.debug(`sensor ${id}: ${e.message}`); }
+  };
+  await set("sensor.lookcam_sync_retard", String(st.behind_min ?? 0), { unit_of_measurement: "min", friendly_name: "LookCam Sync retard", icon: "mdi:timer-sand" });
+  await set("sensor.lookcam_sync_en_attente", String(st.behind_files ?? 0), { unit_of_measurement: "vidéos", friendly_name: "LookCam Sync vidéos en attente", icon: "mdi:download" });
+}
+// run.sh: STATUS_NEXT=<epoch s> node /sync.cjs records the time of the next round in the status
+async function statusNext(epoch) {
+  const st = loadStatus();
+  st.next_at = new Date(Number(epoch) * 1000).toISOString();
+  await pushStatus(st, true);
+}
+
 async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const fetched = loadFetched();
@@ -378,16 +419,20 @@ async function main() {
   let sess = await openSession();
   log.info("session up");
   const ref = { sess };
-  // Full listing at start-up (run.sh sets FULL_LIST=1 for the first round: every missing recording is
-  // fetched, oldest first) and at least once a day to catch older gaps (a file that failed, a round cut
-  // short). Other rounds are incremental: only what was recorded after the newest file we already have.
+  // Full listing when nothing is known yet and at least once a day, to catch older gaps (a file that failed,
+  // a round cut short). Every other round, the start-up one included (0.5.4), is incremental: the SD list
+  // is read back to the watermark only, so a restart or an update no longer rereads the whole card.
   const skip = loadSkip();
   const newest = loadWatermark() || newestKnown(fetched, skip);
-  const fullDue = !newest || process.env.FULL_LIST === "1" || Date.now() - lastFullList() > FULL_LIST_EVERY_MS;
+  const fullDue = !newest || process.env.FULL_LIST === "force" || Date.now() - lastFullList() > FULL_LIST_EVERY_MS;
+  const status = { round: Number(process.env.ROUND || 0) || null, kind: fullDue ? "full" : "incremental", started: new Date().toISOString(),
+    phase: "listing", todo: 0, done: 0, failed: 0, last_error: "" };
+  await pushStatus(status, true);
   log.info((fullDue ? "full round: whole SD card, every missing recording" : `regular round: recordings after ${fmtStamp(newest)}`) +
     `, ${NEWEST_FIRST ? "newest" : "oldest"} first`);
   const all = await listAll(ref, fullDue ? "" : newest);
   if (fullDue) markFullList();
+  const cardNewest = all.map((c) => c.stamp).filter(Boolean).sort().pop() || ""; // the file being recorded included
   sess = ref.sess;
   const only = process.env.ONLY_DAY; // e.g. 2026-11-10 for tests
   // every finished recording, whatever its length (set in the camera app), oldest first:
@@ -406,6 +451,13 @@ async function main() {
     `${count.onPc} already on the PC, ${count.fetched} already fetched, ${count.onShare} already on the share, ${count.recording} being recorded` +
     (only ? `, ${count.otherDay} on other days` : ""));
   if (todo.length) log.info(`to download: ${fmtStamp(todo[0].stamp)} to ${fmtStamp(todo[todo.length - 1].stamp)}, ${NEWEST_FIRST ? "newest" : "oldest"} first`);
+  // lag indicator: recordings still to fetch, and how far the oldest of them is behind the newest on the card
+  const lagOf = () => {
+    const w = todo.filter((c) => c.stamp && !fetched.has(c.name)).map((c) => c.stamp).sort();
+    return { behind_files: w.length, behind_min: w.length && cardNewest ? Math.max(0, Math.round((stampMs(cardNewest) - stampMs(w[0])) / 60000)) : 0 };
+  };
+  Object.assign(status, { phase: "downloading", todo: todo.length, newest_on_card: cardNewest }, lagOf());
+  await pushStatus(status, true);
   let busySince = 0, nOk = 0, nFail = 0, bytesOk = 0, msOk = 0, stopped = "";
   const failed = new Set();
   outer: for (let i = 0; i < todo.length; i++) {
@@ -448,6 +500,8 @@ async function main() {
         const eta = bytesOk ? (left * msOk) / bytesOk : 0;
         log.info(`ok [${i + 1}/${todo.length}] ${path.relative(OUT_DIR, dest)} ${(c.size / 1e6).toFixed(1)} MB in ${Math.round(ms / 1000)} s` +
           (i + 1 < todo.length ? `, ${todo.length - i - 1} left (${fmtGB(left)}, about ${fmtDur(eta)})` : ""));
+        Object.assign(status, { done: nOk, newest_fetched: c.stamp, eta_min: Math.round(eta / 60000) }, lagOf());
+        await pushStatus(status);
         break;
       } catch (e) {
         if (e.preempt) {
@@ -473,7 +527,7 @@ async function main() {
           continue;
         }
         log.warn(`fail ${c.name} attempt ${attempt}/3: ${e.message}`);
-        if (attempt === 3) { nFail++; failed.add(c.name); }
+        if (attempt === 3) { nFail++; failed.add(c.name); status.failed = nFail; status.last_error = `${c.name}: ${e.message}`; }
         attempt++;
         await sleep(attempt > 3 ? 3000 : e.stalled ? 1000 : 10000);
       }
@@ -490,6 +544,11 @@ async function main() {
   const mark = waiting.length ? prevStamp(waiting[0]) : listed[listed.length - 1] || "";
   if (mark && (!newest || mark > newest || fullDue)) { saveWatermark(mark); log.debug(`complete up to ${fmtStamp(mark)}`); }
   const left = todo.length - nOk - nFail;
+  const lag = lagOf();
+  Object.assign(status, { phase: "idle", done: nOk, ended: new Date().toISOString(), complete_until: loadWatermark(), eta_min: 0 }, lag);
+  delete status.next_at;
+  await pushStatus(status, true);
+  log.info(lag.behind_files ? `status: ${lag.behind_files} recording(s) still to fetch, ${lag.behind_min} min behind the camera` : "status: up to date");
   log.info(`round done in ${fmtDur(Date.now() - round0)}: ${nOk} downloaded (${fmtGB(bytesOk)}), ${nFail} failed` +
     (left > 0 ? `, ${left} left for the next round${stopped ? ` (${stopped})` : ""}` : ""));
 }
@@ -660,7 +719,8 @@ async function motionMain(at) {
 
 module.exports = { takeMotions, motionPending, segmentsFor, clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes, fmtStamp, fmtDur, fmtGB, newestKnown, prevStamp };
 if (require.main === module) {
-  (process.env.MOTION_AT ? motionMain(process.env.MOTION_AT)
+  (process.env.STATUS_NEXT ? statusNext(process.env.STATUS_NEXT)
+    : process.env.MOTION_AT ? motionMain(process.env.MOTION_AT)
     : process.env.MOTION_SERVE === "1" ? (async () => { const r = { sess: { closed: true, close() {} } }; try { await serveMotions(r, true); } finally { r.sess.close(); } })()
     : main()).then(() => process.exit(0), (e) => { log.error(e.message); process.exit(1); });
 }
