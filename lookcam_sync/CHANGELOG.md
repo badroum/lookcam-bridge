@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.4.1 — 2026-11-14
+
+- Décrochages de la liaison avec la caméra : un transfert est jugé bloqué après 15 s sans données, au lieu de 30 s. L'add-on rouvre alors la session tout de suite (1 s au lieu de 10 s) et reprend au même octet.
+- Un décrochage survenu après que le fichier a avancé ne compte plus comme une tentative échouée (jusqu'à 20 décrochages par fichier). Un fichier qui décroche plusieurs fois n'est donc plus abandonné jusqu'au tour suivant.
+- Le journal l'indique : « transfer dropped …, reconnecting and resuming (drop N) ». La durée affichée pour chaque vidéo compte les reconnexions.
+
 ## 0.4.0 — 2026-11-13
 
 - Récupération sur mouvement : Home Assistant envoie l'heure d'un mouvement (capteur de la boîte aux lettres) à l'add-on avec le service `hassio.addon_stdin`, au format `AAAAMMJJHHMMSS` (heure locale). Exemple : `input: "{{ now().strftime('%Y%m%d%H%M%S') }}"`.
