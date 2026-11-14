@@ -69,3 +69,10 @@ data:
 The add-on waits until the segment covering that time is finished on the SD card, downloads it into
 `/media/boite_aux_lettres_mouvements/YYYY-MM-DD/` (never purged, outside `max_gb`, not emptied by the PC) and fires
 the event `lookcam_sync_mouvement` (`heure`, `ok`, `fichiers`, `jour`, `dossier`, or `erreur`).
+
+### File server for the PC (LookCam Sync 0.5.0)
+
+Set `http_token` (at least 16 characters) to let the PC fetch the recordings over HTTP instead of the Samba add-on.
+LAN only, `Authorization: Bearer <token>` on every request, port `http_port` (8099):
+`GET /list`, `GET /file/<day>/<name>` (Range supported), `POST /done {"files":[{day,name,size}]}` (deletes copied files
+whose size matches), `PUT /have` (one name per line, replaces `already_on_pc.txt`), `GET /health`.

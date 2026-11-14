@@ -7,7 +7,7 @@ ARG BUILD_VERSION
 RUN apk add --no-cache nodejs
 ENV ADDON_VERSION=${BUILD_VERSION}
 
-COPY sync.cjs run.sh /
+COPY sync.cjs server.cjs run.sh /
 RUN chmod a+x /run.sh
 
 LABEL io.hass.name="LookCam Sync" \

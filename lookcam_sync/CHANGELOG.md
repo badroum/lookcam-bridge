@@ -1,5 +1,16 @@
 # Journal des modifications
 
+## 0.5.0 — 2026-11-14
+
+- Serveur de fichiers intégré pour le PC, pour remplacer l'add-on Samba, trop lourd sur un Raspberry Pi 3. Il démarre seulement si l'option `http_token` est renseignée (16 caractères au moins). Le port se règle avec `http_port` (8099 par défaut). Il n'écoute que sur le réseau local, et chaque requête doit porter l'en-tête `Authorization: Bearer <jeton>`.
+- Routes :
+  - `GET /list` : liste des vidéos terminées (`day`, `name`, `size`, `mtime`) ;
+  - `GET /file/<jour>/<nom>` : téléchargement, avec reprise (`Range`) ;
+  - `POST /done` avec `{"files":[{"day","name","size"}]}` : supprime du Pi les vidéos que le PC a copiées, seulement si la taille correspond ;
+  - `PUT /have` (un nom par ligne) : remplace `already_on_pc.txt` ;
+  - `GET /health` : test sans jeton.
+- Sans `http_token`, rien ne change : le partage Samba reste utilisable.
+
 ## 0.4.1 — 2026-11-14
 
 - Décrochages de la liaison avec la caméra : un transfert est jugé bloqué après 15 s sans données, au lieu de 30 s. L'add-on rouvre alors la session tout de suite (1 s au lieu de 10 s) et reprend au même octet.

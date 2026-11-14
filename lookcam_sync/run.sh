@@ -24,7 +24,20 @@ mkdir -p "${OUT_DIR}"
 
 bashio::log.info "LookCam Sync ${ADDON_VERSION:-?} started: camera ${CAM_IP}, every $(( INTERVAL / 60 )) min, log level ${LOG_LEVEL}, ${DOWNLOAD_ORDER/_/ }, budget ${MAX_GB} GB, keep ${KEEP_DAYS} days"
 bashio::log.info "First round: full catch-up of every missing recording (${DOWNLOAD_ORDER/_/ }), then regular rounds"
-trap 'bashio::log.info "LookCam Sync stopping"; exit 0' TERM INT
+trap 'bashio::log.info "LookCam Sync stopping"; [ -n "${HTTP_PID:-}" ] && kill "${HTTP_PID}" 2>/dev/null; exit 0' TERM INT
+
+# File server for the PC (in place of the Samba add-on), only when an http_token is set.
+export HTTP_PORT="$(bashio::config 'http_port')"
+export HTTP_TOKEN=""
+if bashio::config.has_value 'http_token'; then HTTP_TOKEN="$(bashio::config 'http_token')"; fi
+if [ "${#HTTP_TOKEN}" -ge 16 ]; then
+  ( while true; do node /server.cjs; bashio::log.warning "file server stopped, restarting in 5 s"; sleep 5; done ) &
+  HTTP_PID=$!
+elif [ -n "${HTTP_TOKEN}" ]; then
+  bashio::log.warning "http_token shorter than 16 characters: file server for the PC not started"
+else
+  bashio::log.info "No http_token: file server for the PC not started (Samba or another share is used)"
+fi
 
 # First round after start-up: full SD listing, every missing recording (oldest first).
 # Then the regular rounds every <interval_minutes>, incremental (plus one full listing a day).

@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: node --check lookcam_sync/sync.cjs
+      - run: node --check lookcam_sync/sync.cjs && node --check lookcam_sync/server.cjs
 
   build:
     needs: test
