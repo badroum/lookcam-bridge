@@ -22,6 +22,9 @@ bashio::log.level "${LOG_LEVEL}"
 INTERVAL=$(( $(bashio::config 'interval_minutes') * 60 ))
 KEEP_DAYS="$(bashio::config 'keep_days')"
 mkdir -p "${OUT_DIR}"
+# Memory (0.5.5): the Pi 3 has 1 GB for Home Assistant and every add-on. Cap the Node heaps so that a
+# leak or a big listing ends in a clean error (retried next round) rather than in the kernel killing us.
+export NODE_OPTIONS="--max-old-space-size=128"
 
 bashio::log.info "LookCam Sync ${ADDON_VERSION:-?} started: camera ${CAM_IP}, every $(( INTERVAL / 60 )) min, log level ${LOG_LEVEL}, ${DOWNLOAD_ORDER/_/ }, budget ${MAX_GB} GB, keep ${KEEP_DAYS} days"
 bashio::log.info "First round: catch-up of every recording made since the last one fetched (${DOWNLOAD_ORDER/_/ }), then regular rounds; full SD listing once a day"
@@ -31,7 +34,10 @@ trap 'bashio::log.info "LookCam Sync stopping"; [ -n "${HTTP_PID:-}" ] && kill "
 # hassio.addon_stdin. A background reader queues it at once in ${MOTION_QUEUE}; sync.cjs serves the queue
 # between two files and pauses a download in progress for it, so a motion never waits for a round to end.
 exec 3<&0
-( while read -r LINE <&3; do
+# Background loops (0.5.5): bashio turns on errexit, which a subshell inherits; a killed child would end
+# the loop silently. "set +e" keeps these loops alive whatever happens to the commands they run.
+( set +e
+  while read -r LINE <&3; do
     AT="$(printf '%s' "${LINE}" | tr -cd '0-9')"
     if [ "${#AT}" = "14" ]; then
       echo "${AT}" >> "${MOTION_QUEUE}"
@@ -41,6 +47,22 @@ exec 3<&0
     fi
   done ) &
 STDIN_PID=$!
+
+# File server for the PC, restarted 5 s after any exit (crash, out of memory...). Run under "set +e":
+# with errexit, a killed node used to end this loop without a word (15/11, 07:01).
+start_file_server() {
+  ( set +e
+    while true; do
+      node --max-old-space-size=48 /server.cjs
+      RC=$?
+      bashio::log.warning "file server stopped (exit ${RC}$( [ "${RC}" = "137" ] && echo ", killed: out of memory?" )), restarting in 5 s"
+      sleep 5
+    done ) &
+  HTTP_PID=$!
+}
+
+# Free memory of the host, in MB (MemAvailable), empty if unknown.
+mem_available_mb() { awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null || true; }
 
 # How the PC fetches the recordings (option pc_transfer): samba (default: the Samba add-on shares /media)
 # or http (built-in file server below, in place of the Samba add-on; needs http_token, 16+ characters).
@@ -52,8 +74,7 @@ if bashio::config.has_value 'http_token'; then HTTP_TOKEN="$(bashio::config 'htt
 if [ "${PC_TRANSFER}" = "http" ]; then
   if [ "${#HTTP_TOKEN}" -ge 16 ]; then
     bashio::log.info "PC transfer: built-in file server on port ${HTTP_PORT} (the Samba add-on can be stopped)"
-    ( while true; do node /server.cjs; bashio::log.warning "file server stopped, restarting in 5 s"; sleep 5; done ) &
-    HTTP_PID=$!
+    start_file_server
   else
     bashio::log.warning "PC transfer http: http_token missing or shorter than 16 characters, file server not started"
   fi
@@ -65,6 +86,8 @@ fi
 # Then the regular rounds every <interval_minutes>, incremental (plus one full listing a day).
 FULL_LIST=1
 ROUND=0
+FAILED_ROUNDS=0
+FAILED_SINCE=""
 while true; do
   ROUND=$(( ROUND + 1 ))
   if [ "${FULL_LIST}" = "1" ]; then
@@ -72,14 +95,32 @@ while true; do
   else
     bashio::log.info "Round ${ROUND} (regular) from ${CAM_IP}"
   fi
+  MEM_MB="$(mem_available_mb)"
+  if [ -n "${MEM_MB}" ] && [ "${MEM_MB}" -lt 150 ]; then
+    bashio::log.warning "Low memory on the host: ${MEM_MB} MB available (the system may kill a process)"
+  fi
   ROUND_START=$(date +%s)
   if ROUND="${ROUND}" FULL_LIST="${FULL_LIST}" node /sync.cjs; then
     FULL_LIST=0
+    if [ "${FAILED_ROUNDS}" -gt 0 ]; then
+      bashio::log.info "Camera back after ${FAILED_ROUNDS} failed round(s) since ${FAILED_SINCE}"
+    fi
+    FAILED_ROUNDS=0
   else
-    bashio::log.warning "Round ${ROUND} ended with an error, retry next round"
+    RC=$?
+    FAILED_ROUNDS=$(( FAILED_ROUNDS + 1 ))
+    [ "${FAILED_ROUNDS}" = "1" ] && FAILED_SINCE="$(date '+%d/%m %H:%M')"
+    if [ "${RC}" = "137" ]; then
+      bashio::log.warning "Round ${ROUND} was killed (out of memory?), retry next round"
+    else
+      bashio::log.warning "Round ${ROUND} ended with an error, retry next round"
+    fi
+    if [ "${FAILED_ROUNDS}" -ge 3 ]; then
+      bashio::log.warning "${FAILED_ROUNDS} rounds in a row without the camera since ${FAILED_SINCE}: check its power and Wi-Fi (Livebox: does it still have the address ${CAM_IP}?)"
+    fi
   fi
-  find "${OUT_DIR}" -type f \( -name '*.mp4' -o -name '*.part' \) -mtime +"${KEEP_DAYS}" -delete
-  find "${OUT_DIR}" -mindepth 1 -type d -empty -delete
+  find "${OUT_DIR}" -type f \( -name '*.mp4' -o -name '*.part' \) -mtime +"${KEEP_DAYS}" -delete || true
+  find "${OUT_DIR}" -mindepth 1 -type d -empty -delete || true
   # A long round (a catch-up) only fetches what was listed when it started: the recordings made meanwhile
   # wait for the next round. When the round lasted more than half the interval, start the next one at once
   # (after 1 min) instead of waiting the whole interval; regular short rounds keep the interval.
@@ -97,7 +138,13 @@ while true; do
     if [ -s "${MOTION_QUEUE}" ]; then
       MOTION_SERVE=1 node /sync.cjs || bashio::log.warning "Motion: segment not fetched"
     fi
+    # Restart the file server loop if it died anyway (killed with its loop).
+    if [ -n "${HTTP_PID:-}" ] && ! kill -0 "${HTTP_PID}" 2>/dev/null; then
+      bashio::log.warning "file server loop gone, starting it again"
+      start_file_server
+    fi
     sleep 5 &
-    wait $!
+    # "|| true": with errexit, a killed sleep used to stop the whole add-on (15/11, 07:02).
+    wait $! || true
   done
 done

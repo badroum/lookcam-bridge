@@ -1,5 +1,16 @@
 # Journal des modifications
 
+## 0.5.5 — 2026-11-15
+
+- L'add-on ne s'arrête plus quand le système tue un de ses processus. Le 15/11 vers 07:01, le Pi manquait de mémoire : le serveur de fichiers puis la boucle d'attente ont été tués (« Killed »). Comme bashio arrête le script à la première commande en échec, le serveur n'a pas été relancé et l'add-on s'est arrêté, sans redémarrage automatique.
+  - Les boucles d'arrière-plan (serveur de fichiers, lecture des mouvements) ne s'arrêtent plus sur une erreur. Le serveur est relancé 5 s après toute sortie, avec la cause dans le journal (« exit 137, killed: out of memory? »).
+  - Si la boucle du serveur disparaît quand même, elle est relancée pendant l'attente entre deux tours.
+  - Une attente ou un nettoyage interrompu n'arrête plus l'add-on.
+- Mémoire plafonnée : 128 Mo pour la synchro, 48 Mo pour le serveur de fichiers. Un dépassement donne une erreur propre, reprise au tour suivant, au lieu d'un arrêt brutal par le système.
+- Alerte « Low memory on the host » dans le journal quand il reste moins de 150 Mo de mémoire disponible sur le Pi au début d'un tour.
+- Caméra injoignable : à partir de 3 tours de suite en échec, le journal le dit clairement, avec l'heure du premier échec et un rappel de vérifier l'alimentation et le Wi-Fi. Le retour de la caméra est aussi indiqué.
+- Conseil : cocher « Watchdog » dans l'onglet Infos de l'add-on, pour que le Superviseur le redémarre s'il s'arrête malgré tout.
+
 ## 0.5.4 — 2026-11-14
 
 - Enchaînement après un long tour : un tour ne récupère que les vidéos présentes au moment où il a lu la carte. Après un rattrapage de plusieurs heures, les vidéos enregistrées pendant ce temps attendaient en plus l'intervalle complet, si bien que la synchro semblait arrêtée. Désormais, si un tour a duré plus de la moitié de l'intervalle, le suivant démarre au bout d'une minute. Les tours réguliers, courts, gardent l'intervalle normal.
