@@ -6,7 +6,8 @@
   - `internal` (par défaut, comme avant) : `/media` de Home Assistant, sur la carte SD du Pi ;
   - `usb` : le premier disque externe (clé ou disque USB) que Home Assistant a monté sous `/media/<nom>` ou `/share/<nom>` ;
   - `custom` : le dossier indiqué dans la nouvelle option `storage_path`, sous `/media` ou `/share`.
-- Les vidéos vont dans `<support>/boite_aux_lettres/<jour>/` et les segments de mouvement dans `<support>/boite_aux_lettres_mouvements/<jour>/`. Le serveur de fichiers du PC et la purge suivent le support choisi.
+- Les vidéos vont dans `<support>/boite_aux_lettres/<jour>/`. Le serveur de fichiers du PC et la purge suivent le support choisi.
+- Les segments de mouvement restent dans `/media/boite_aux_lettres_mouvements/<jour>/`, quel que soit le support : la notification et le tableau de bord de Home Assistant y pointent (`media-source://media_source/local/boite_aux_lettres_mouvements/…`).
 - Au démarrage, le journal liste les supports vus par l'add-on avec leur espace libre (« Storage seen by the add-on: … »), puis le support retenu.
 - Si la clé USB n'est pas visible ou si le dossier n'est pas accessible en écriture, l'add-on reste sur `/media` et le dit dans le journal, sans s'arrêter.
 - Changement de support : les vidéos déjà enregistrées restent à l'ancien endroit (ni déplacées, ni supprimées). Le journal indique combien il en reste.

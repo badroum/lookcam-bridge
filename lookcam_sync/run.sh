@@ -1,7 +1,7 @@
 #!/usr/bin/with-contenv bashio
 # Every <interval_minutes>: download new recordings from the camera SD card to <storage>/boite_aux_lettres/<day>/.
 # Then remove clips older than <keep_days> on this host only (the camera and the PC keep theirs).
-# Motions (stdin from Home Assistant): the covering segment goes to <storage>/boite_aux_lettres_mouvements/<day>/,
+# Motions (stdin from Home Assistant): the covering segment goes to /media/boite_aux_lettres_mouvements/<day>/,
 # kept forever (outside the share the PC empties and outside the purge).
 export CAM_IP="$(bashio::config 'camera_ip')"
 export CAM_PASSWORD="$(bashio::config 'password')"
@@ -22,8 +22,10 @@ bashio::log.level "${LOG_LEVEL}"
 #   internal (default): /media of Home Assistant, on the Pi's own SD card;
 #   usb: the first external disk Home Assistant mounted under /media/<name> (or /share/<name>);
 #   custom: the folder given in "storage_path", under /media or /share.
-# The recordings go to <base>/boite_aux_lettres/<day>/ and the motion segments to
-# <base>/boite_aux_lettres_mouvements/<day>/. Files already in another location are left where they are.
+# The recordings go to <base>/boite_aux_lettres/<day>/. The motion segments stay in
+# /media/boite_aux_lettres_mouvements/<day>/ whatever the storage: Home Assistant links to them as
+# media-source://media_source/local/boite_aux_lettres_mouvements/... (notification, dashboard).
+# Files already in another location are left where they are.
 free_mb() { df -Pm "$1" 2>/dev/null | awk 'NR == 2 { print $4 }' || true; }
 # Mount points below /media and /share other than those two folders (USB disks, network shares).
 list_mounts() {
@@ -68,12 +70,12 @@ case "${STORAGE}" in
     ;;
 esac
 export OUT_DIR="${BASE}/boite_aux_lettres"
-export MOTION_DIR="${BASE}/boite_aux_lettres_mouvements"
+export MOTION_DIR="/media/boite_aux_lettres_mouvements"
 bashio::log.info "Storage: ${STORAGE} -> ${OUT_DIR} ($(free_mb "${BASE}") MB free)"
 LAST_BASE_FILE="/data/storage_base.txt"
 LAST_BASE="$(cat "${LAST_BASE_FILE}" 2>/dev/null || true)"
 if [ -n "${LAST_BASE}" ] && [ "${LAST_BASE}" != "${BASE}" ]; then
-  LEFT="$(find "${LAST_BASE}/boite_aux_lettres" "${LAST_BASE}/boite_aux_lettres_mouvements" -type f -name '*.mp4' 2>/dev/null | wc -l || true)"
+  LEFT="$(find "${LAST_BASE}/boite_aux_lettres" -type f -name '*.mp4' 2>/dev/null | wc -l || true)"
   bashio::log.warning "Storage changed from ${LAST_BASE} to ${BASE}: ${LEFT:-0} recording(s) stay in the old place (not moved, not deleted)"
 fi
 echo "${BASE}" > "${LAST_BASE_FILE}" || true
