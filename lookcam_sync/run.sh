@@ -1,13 +1,11 @@
 #!/usr/bin/with-contenv bashio
-# Every <interval_minutes>: download new recordings from the camera SD card to /media/boite_aux_lettres/<day>/.
+# Every <interval_minutes>: download new recordings from the camera SD card to <storage>/boite_aux_lettres/<day>/.
 # Then remove clips older than <keep_days> on this host only (the camera and the PC keep theirs).
 # Motions (stdin from Home Assistant): the covering segment goes to /media/boite_aux_lettres_mouvements/<day>/,
 # kept forever (outside the share the PC empties and outside the purge).
 export CAM_IP="$(bashio::config 'camera_ip')"
 export CAM_PASSWORD="$(bashio::config 'password')"
-export OUT_DIR="/media/boite_aux_lettres"
 export STATE_FILE="/data/fetched.json"   # clips already fetched (the PC may move them away)
-export MOTION_DIR="/media/boite_aux_lettres_mouvements"
 export MOTION_QUEUE="/data/motion_queue"  # motion times from Home Assistant, read by sync.cjs (0.5.2)
 export MAX_GB="$(bashio::config 'max_gb')"
 # debug | info | warning | error (optional option: info when absent from an older configuration)
@@ -19,9 +17,71 @@ DOWNLOAD_ORDER="oldest_first"
 if bashio::config.has_value 'download_order'; then DOWNLOAD_ORDER="$(bashio::config 'download_order')"; fi
 export DOWNLOAD_ORDER
 bashio::log.level "${LOG_LEVEL}"
+
+# Storage (0.5.6), option "storage":
+#   internal (default): /media of Home Assistant, on the Pi's own SD card;
+#   usb: the first external disk Home Assistant mounted under /media/<name> (or /share/<name>);
+#   custom: the folder given in "storage_path", under /media or /share.
+# The recordings go to <base>/boite_aux_lettres/<day>/. The motion segments stay in
+# /media/boite_aux_lettres_mouvements/<day>/ whatever the storage: Home Assistant links to them as
+# media-source://media_source/local/boite_aux_lettres_mouvements/... (notification, dashboard).
+# Files already in another location are left where they are.
+free_mb() { df -Pm "$1" 2>/dev/null | awk 'NR == 2 { print $4 }' || true; }
+# Mount points below /media and /share other than those two folders (USB disks, network shares).
+list_mounts() {
+  awk '$2 ~ "^/(media|share)/" && $3 !~ "^(tmpfs|proc|sysfs|devtmpfs|overlay)$" { gsub("\\\\040", " ", $2); print $2 "|" $1 "|" $3 }' /proc/mounts 2>/dev/null || true
+}
+STORAGE="internal"
+if bashio::config.has_value 'storage'; then STORAGE="$(bashio::config 'storage')"; fi
+STORAGE_PATH=""
+if bashio::config.has_value 'storage_path'; then STORAGE_PATH="$(bashio::config 'storage_path')"; fi
+MOUNTS="$(list_mounts)"
+bashio::log.info "Storage seen by the add-on: /media (internal, $(free_mb /media) MB free)"
+if [ -n "${MOUNTS}" ]; then
+  while IFS='|' read -r MP DEV FS; do
+    [ -n "${MP}" ] && bashio::log.info "Storage seen by the add-on: ${MP} (${DEV}, ${FS}, $(free_mb "${MP}") MB free)"
+  done <<< "${MOUNTS}"
+else
+  bashio::log.info "Storage seen by the add-on: no external disk under /media or /share"
+fi
+BASE="/media"
+case "${STORAGE}" in
+  usb)
+    USB_MP="$(printf '%s\n' "${MOUNTS}" | awk -F'|' '$2 ~ "^/dev/(sd|nvme|mmcblk[1-9])" { print $1; exit }' || true)"
+    if [ -n "${USB_MP}" ]; then
+      BASE="${USB_MP}"
+    else
+      bashio::log.warning "storage: usb, but no USB disk is mounted under /media or /share: recordings stay on the internal storage (/media). Check Settings > System > Storage in Home Assistant."
+    fi
+    ;;
+  custom)
+    case "${STORAGE_PATH}" in
+      /media|/media/*|/share|/share/*)
+        if mkdir -p "${STORAGE_PATH}" 2>/dev/null && [ -w "${STORAGE_PATH}" ]; then
+          BASE="${STORAGE_PATH%/}"
+        else
+          bashio::log.warning "storage_path ${STORAGE_PATH} cannot be written: recordings stay on /media"
+        fi
+        ;;
+      *)
+        bashio::log.warning "storage_path must be under /media or /share (got \"${STORAGE_PATH}\"): recordings stay on /media"
+        ;;
+    esac
+    ;;
+esac
+export OUT_DIR="${BASE}/boite_aux_lettres"
+export MOTION_DIR="/media/boite_aux_lettres_mouvements"
+bashio::log.info "Storage: ${STORAGE} -> ${OUT_DIR} ($(free_mb "${BASE}") MB free)"
+LAST_BASE_FILE="/data/storage_base.txt"
+LAST_BASE="$(cat "${LAST_BASE_FILE}" 2>/dev/null || true)"
+if [ -n "${LAST_BASE}" ] && [ "${LAST_BASE}" != "${BASE}" ]; then
+  LEFT="$(find "${LAST_BASE}/boite_aux_lettres" -type f -name '*.mp4' 2>/dev/null | wc -l || true)"
+  bashio::log.warning "Storage changed from ${LAST_BASE} to ${BASE}: ${LEFT:-0} recording(s) stay in the old place (not moved, not deleted)"
+fi
+echo "${BASE}" > "${LAST_BASE_FILE}" || true
 INTERVAL=$(( $(bashio::config 'interval_minutes') * 60 ))
 KEEP_DAYS="$(bashio::config 'keep_days')"
-mkdir -p "${OUT_DIR}"
+mkdir -p "${OUT_DIR}" "${MOTION_DIR}"
 # Memory (0.5.5): the Pi 3 has 1 GB for Home Assistant and every add-on. Cap the Node heaps so that a
 # leak or a big listing ends in a clean error (retried next round) rather than in the kernel killing us.
 export NODE_OPTIONS="--max-old-space-size=128"

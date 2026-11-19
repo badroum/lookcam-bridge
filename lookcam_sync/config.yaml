@@ -1,5 +1,5 @@
 name: LookCam Sync
-version: "0.5.5"
+version: "0.5.6"
 slug: lookcam_sync
 description: Downloads the LookCam recordings from the camera SD card to /media, locally, on a schedule
 url: https://github.com/badroum/lookcam-bridge
@@ -19,8 +19,11 @@ homeassistant_api: true
 host_network: true
 # pc_transfer: samba (Samba add-on) or http (built-in file server below)
 # http_port: file server for the PC (list, download with resume, delete once copied), LAN only, token
+# storage: internal (/media on the Pi SD card), usb (external disk mounted by Home Assistant under /media
+# or /share) or custom (storage_path, under /media or /share)
 map:
   - media:rw
+  - share:rw
 options:
   camera_ip: 192.168.1.42
   password: ""
@@ -32,6 +35,7 @@ options:
   pc_transfer: samba
   http_port: 8099
   http_token: ""
+  storage: internal
 schema:
   camera_ip: str
   password: password
@@ -43,3 +47,5 @@ schema:
   pc_transfer: list(samba|http)
   http_port: port
   http_token: password
+  storage: list(internal|usb|custom)?
+  storage_path: str?

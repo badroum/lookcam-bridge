@@ -452,13 +452,27 @@ async function main() {
     (only ? `, ${count.otherDay} on other days` : ""));
   if (todo.length) log.info(`to download: ${fmtStamp(todo[0].stamp)} to ${fmtStamp(todo[todo.length - 1].stamp)}, ${NEWEST_FIRST ? "newest" : "oldest"} first`);
   // lag indicator: recordings still to fetch, and how far the oldest of them is behind the newest on the card
+  const nowOnPc = new Set(); // reached the PC another way during this round (0.5.6)
   const lagOf = () => {
-    const w = todo.filter((c) => c.stamp && !fetched.has(c.name)).map((c) => c.stamp).sort();
+    const w = todo.filter((c) => c.stamp && !fetched.has(c.name) && !nowOnPc.has(c.name)).map((c) => c.stamp).sort();
     return { behind_files: w.length, behind_min: w.length && cardNewest ? Math.max(0, Math.round((stampMs(cardNewest) - stampMs(w[0])) / 60000)) : 0 };
   };
   Object.assign(status, { phase: "downloading", todo: todo.length, newest_on_card: cardNewest }, lagOf());
   await pushStatus(status, true);
-  let busySince = 0, nOk = 0, nFail = 0, bytesOk = 0, msOk = 0, stopped = "";
+  let busySince = 0, nOk = 0, nFail = 0, nSkipped = 0, bytesOk = 0, msOk = 0, stopped = "";
+  let skipMtime = 0, skipSet = skip;
+  const reloadSkip = () => {
+    try {
+      const m = fs.statSync(SKIP_FILE).mtimeMs;
+      if (m !== skipMtime) {
+        const before = skipSet.size;
+        skipMtime = m; skipSet = loadSkip();
+        if (skipMtime && skipSet.size !== before) log.info(`list of recordings on the PC reread: ${skipSet.size} names`);
+      }
+    } catch {}
+    return skipSet;
+  };
+  reloadSkip();
   const failed = new Set();
   outer: for (let i = 0; i < todo.length; i++) {
     const c = todo[i];
@@ -469,6 +483,14 @@ async function main() {
         log.info(`storage budget reached (${fmtGB(used)} used of ${MAX_BYTES / 1e9} GB), the rest waits for the PC to empty the share`);
         break;
       }
+    }
+    // The PC may have received this recording another way meanwhile (copied from the SD card, 0.5.6):
+    // reread its list when the file changed, and skip what it already has.
+    const skipNow = reloadSkip();
+    if (skipNow.has(c.name)) {
+      nSkipped++; nowOnPc.add(c.name);
+      log.debug(`skip ${c.name}: now on the PC`);
+      continue;
     }
     fs.mkdirSync(c.dir, { recursive: true });
     const dest = path.join(c.dir, c.name);
@@ -539,17 +561,18 @@ async function main() {
   // advance the watermark to just before the oldest recording still waiting (budget, busy camera), or to
   // the newest finished one listed when nothing waits. Files that failed 3 times do not hold it back:
   // the daily full listing tries them again.
-  const waiting = todo.filter((c) => c.stamp && !fetched.has(c.name) && !failed.has(c.name)).map((c) => c.stamp).sort();
+  const waiting = todo.filter((c) => c.stamp && !fetched.has(c.name) && !failed.has(c.name) && !nowOnPc.has(c.name)).map((c) => c.stamp).sort();
   const listed = all.filter((c) => c.stamp && c.durMs !== null).map((c) => c.stamp).sort();
   const mark = waiting.length ? prevStamp(waiting[0]) : listed[listed.length - 1] || "";
   if (mark && (!newest || mark > newest || fullDue)) { saveWatermark(mark); log.debug(`complete up to ${fmtStamp(mark)}`); }
-  const left = todo.length - nOk - nFail;
+  const left = todo.length - nOk - nFail - nSkipped;
   const lag = lagOf();
   Object.assign(status, { phase: "idle", done: nOk, ended: new Date().toISOString(), complete_until: loadWatermark(), eta_min: 0 }, lag);
   delete status.next_at;
   await pushStatus(status, true);
   log.info(lag.behind_files ? `status: ${lag.behind_files} recording(s) still to fetch, ${lag.behind_min} min behind the camera` : "status: up to date");
   log.info(`round done in ${fmtDur(Date.now() - round0)}: ${nOk} downloaded (${fmtGB(bytesOk)}), ${nFail} failed` +
+    (nSkipped ? `, ${nSkipped} skipped (reached the PC another way)` : "") +
     (left > 0 ? `, ${left} left for the next round${stopped ? ` (${stopped})` : ""}` : ""));
 }
 
