@@ -12,6 +12,7 @@
 - Si la clé USB n'est pas visible ou si le dossier n'est pas accessible en écriture, l'add-on reste sur `/media` et le dit dans le journal, sans s'arrêter.
 - Changement de support : les vidéos déjà enregistrées restent à l'ancien endroit (ni déplacées, ni supprimées). Le journal indique combien il en reste.
 - Accès ajouté au dossier `/share` de Home Assistant.
+- Pendant un tour, l'add-on relit la liste des vidéos déjà sur le PC dès qu'elle change, avant chaque téléchargement. Une vidéo arrivée sur le PC par un autre chemin (copie depuis la carte SD de la caméra, par exemple) n'est plus téléchargée une seconde fois. Le bilan du tour l'indique : « N skipped (reached the PC another way) ».
 
 ## 0.5.5 — 2026-11-15
 
