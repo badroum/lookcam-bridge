@@ -1,5 +1,17 @@
 # Journal des modifications
 
+## 0.5.6 — 2026-11-19
+
+- Choix du support de stockage, nouvelle option `storage` :
+  - `internal` (par défaut, comme avant) : `/media` de Home Assistant, sur la carte SD du Pi ;
+  - `usb` : le premier disque externe (clé ou disque USB) que Home Assistant a monté sous `/media/<nom>` ou `/share/<nom>` ;
+  - `custom` : le dossier indiqué dans la nouvelle option `storage_path`, sous `/media` ou `/share`.
+- Les vidéos vont dans `<support>/boite_aux_lettres/<jour>/` et les segments de mouvement dans `<support>/boite_aux_lettres_mouvements/<jour>/`. Le serveur de fichiers du PC et la purge suivent le support choisi.
+- Au démarrage, le journal liste les supports vus par l'add-on avec leur espace libre (« Storage seen by the add-on: … »), puis le support retenu.
+- Si la clé USB n'est pas visible ou si le dossier n'est pas accessible en écriture, l'add-on reste sur `/media` et le dit dans le journal, sans s'arrêter.
+- Changement de support : les vidéos déjà enregistrées restent à l'ancien endroit (ni déplacées, ni supprimées). Le journal indique combien il en reste.
+- Accès ajouté au dossier `/share` de Home Assistant.
+
 ## 0.5.5 — 2026-11-15
 
 - L'add-on ne s'arrête plus quand le système tue un de ses processus. Le 15/11 vers 07:01, le Pi manquait de mémoire : le serveur de fichiers puis la boucle d'attente ont été tués (« Killed »). Comme bashio arrête le script à la première commande en échec, le serveur n'a pas été relancé et l'add-on s'est arrêté, sans redémarrage automatique.
