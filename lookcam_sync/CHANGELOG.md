@@ -1,5 +1,19 @@
 # Journal des modifications
 
+## 0.5.7 — 2026-11-21
+
+- Réglages de la caméra depuis l'add-on.
+  - Lecture à chaque tour : carte SD (présente, enregistrement, durée des segments, espace libre), alarme (sensibilité, plage horaire), image (luminosité, saturation) et LED infrarouges. Rien sur le Wi-Fi ni l'identifiant : la commande qui les renvoie n'est jamais utilisée. Dernière lecture dans `/data/camera/config.json`, une copie datée dans `/data/camera/backup/` à chaque changement et avant chaque envoi.
+  - Envoi seulement sur demande, de trois façons :
+    - options `camera_*` de l'onglet Configuration (toutes facultatives, vide = inchangé) : enregistrement sur carte, enregistrement sur alarme, boucle, son, durée des segments, sensibilité, plage d'alarme, luminosité, saturation, contraste, teinte, mode infrarouge. Une option est envoyée une seule fois, au premier tour après son changement, jamais à chaque tour : un réglage refait ensuite dans l'appli LookCam n'est pas écrasé ;
+    - service `hassio.addon_stdin` avec `input: {"camera": {"carte": {"openRes": 1}}}`, ou `{"camera": "read"}` pour une simple lecture ;
+    - route `POST /camera` du serveur de fichiers (même jeton), pour le site du PC, et `GET /camera` pour lire les réglages et le résultat du dernier envoi.
+  - Chaque valeur est contrôlée avant l'envoi (champ autorisé, plage). L'add-on relit la caméra après l'envoi et dit dans le journal ce qui est appliqué ou refusé. Événement Home Assistant `lookcam_sync_camera` avec la demande, les valeurs avant et après.
+  - Jamais envoyés : redémarrage, remise à zéro, mise à l'heure, formatage de la carte, suppression de fichiers, mot de passe, Wi-Fi, exposition.
+  - Un mouvement garde la priorité : aucun envoi pendant qu'un mouvement attend.
+- Nouveau capteur `sensor.lookcam_sync_camera` : « enregistre », « n'enregistre pas » (la vidéo la plus récente de la carte est trop ancienne), « enregistrement coupé », « carte absente » ou « carte en erreur ». Attributs : carte, enregistrement, durée des segments, espace libre et total (Go), dernière vidéo sur la caméra, sensibilité, plage d'alarme, réglages d'image, infrarouge, dernier envoi. Le journal le signale aussi à chaque tour.
+- Libellés et aides en français des options caméra dans l'onglet Configuration.
+
 ## 0.5.6 — 2026-11-19
 
 - Choix du support de stockage, nouvelle option `storage` :

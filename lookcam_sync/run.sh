@@ -7,6 +7,9 @@ export CAM_IP="$(bashio::config 'camera_ip')"
 export CAM_PASSWORD="$(bashio::config 'password')"
 export STATE_FILE="/data/fetched.json"   # clips already fetched (the PC may move them away)
 export MOTION_QUEUE="/data/motion_queue"  # motion times from Home Assistant, read by sync.cjs (0.5.2)
+export CAMERA_DIR="/data/camera"          # camera settings: last read, backups, pending request (0.5.7)
+CAMERA_REQUEST="${CAMERA_DIR}/request.json"
+mkdir -p "${CAMERA_DIR}"
 export MAX_GB="$(bashio::config 'max_gb')"
 # debug | info | warning | error (optional option: info when absent from an older configuration)
 LOG_LEVEL="info"
@@ -93,11 +96,22 @@ trap 'bashio::log.info "LookCam Sync stopping"; [ -n "${HTTP_PID:-}" ] && kill "
 # Motions (0.5.2): Home Assistant sends the motion time (YYYYMMDDHHMMSS, local time) with the service
 # hassio.addon_stdin. A background reader queues it at once in ${MOTION_QUEUE}; sync.cjs serves the queue
 # between two files and pauses a download in progress for it, so a motion never waits for a round to end.
+# Camera settings (0.5.7): a JSON object, e.g. input {"camera": {"carte": {"openRes": 1}}} or
+# {"camera": "read"}, goes to ${CAMERA_REQUEST} (the motion queue keeps digits only and would lose it).
+# sync.cjs checks it before sending anything.
 exec 3<&0
 # Background loops (0.5.5): bashio turns on errexit, which a subshell inherits; a killed child would end
 # the loop silently. "set +e" keeps these loops alive whatever happens to the commands they run.
 ( set +e
   while read -r LINE <&3; do
+    case "${LINE}" in
+      *"{"*)
+        if printf '%s\n' "${LINE}" > "${CAMERA_REQUEST}.tmp" && mv -f "${CAMERA_REQUEST}.tmp" "${CAMERA_REQUEST}"; then
+          bashio::log.info "Camera settings request queued (checked before sending)"
+        fi
+        continue
+        ;;
+    esac
     AT="$(printf '%s' "${LINE}" | tr -cd '0-9')"
     if [ "${#AT}" = "14" ]; then
       echo "${AT}" >> "${MOTION_QUEUE}"
@@ -197,6 +211,13 @@ while true; do
   while [ "$(date +%s)" -lt "${NEXT}" ]; do
     if [ -s "${MOTION_QUEUE}" ]; then
       MOTION_SERVE=1 node /sync.cjs || bashio::log.warning "Motion: segment not fetched"
+    fi
+    # Camera settings request (stdin, PC), after the motions.
+    if [ -s "${CAMERA_REQUEST}" ] && [ ! -s "${MOTION_QUEUE}" ] && [ "$(date +%s)" -ge "${CAMERA_RETRY_AT:-0}" ]; then
+      if ! CAMERA_APPLY=1 node /sync.cjs; then
+        CAMERA_RETRY_AT=$(( $(date +%s) + 300 ))
+        bashio::log.warning "Camera settings: camera not reached, request kept, next try in 5 min (or at the next round)"
+      fi
     fi
     # Restart the file server loop if it died anyway (killed with its loop).
     if [ -n "${HTTP_PID:-}" ] && ! kill -0 "${HTTP_PID}" 2>/dev/null; then

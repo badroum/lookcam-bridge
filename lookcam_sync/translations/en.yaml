@@ -1,0 +1,40 @@
+configuration:
+  camera_sd_recording:
+    name: "Camera: recording to the SD card"
+    description: "Turns SD card recording on or off (openRes). Empty = unchanged. Sent once, at the round after the change."
+  camera_alarm_recording:
+    name: "Camera: alarm recording"
+    description: "Recording triggered by the camera motion detection (alarmRes). Empty = unchanged."
+  camera_loop_recording:
+    name: "Camera: loop recording"
+    description: "Camera field loopRes (overwrite the oldest recordings, per the app). Empty = unchanged."
+  camera_sd_audio:
+    name: "Camera: sound in the recordings"
+    description: "Audio track in the SD recordings. Empty = unchanged."
+  camera_segment_minutes:
+    name: "Camera: segment length (min)"
+    description: "Length of each recorded file, 1 to 60 minutes (videoCycle). Empty = unchanged."
+  camera_sensitivity:
+    name: "Camera: alarm sensitivity"
+    description: "0 off, 1 low, 2 medium, 3 high. Empty = unchanged."
+  camera_alarm_start:
+    name: "Camera: alarm window start"
+    description: "Time HH:MM. Empty = unchanged."
+  camera_alarm_end:
+    name: "Camera: alarm window end"
+    description: "Time HH:MM. Empty = unchanged."
+  camera_brightness:
+    name: "Camera: brightness"
+    description: "0 to 63. The camera sometimes rounds down by one. Empty = unchanged."
+  camera_saturation:
+    name: "Camera: saturation"
+    description: "0 to 63. Empty = unchanged."
+  camera_contrast:
+    name: "Camera: contrast"
+    description: "0 to 63, only when the camera supports it. Empty = unchanged."
+  camera_hue:
+    name: "Camera: hue"
+    description: "0 to 63, only when the camera supports it. Empty = unchanged."
+  camera_ir_mode:
+    name: "Camera: infrared mode (raw value)"
+    description: "Infrared LED field control, 0 to 2. Check its meaning in the app before changing it. Empty = unchanged."
