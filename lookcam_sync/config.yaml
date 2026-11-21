@@ -1,5 +1,5 @@
 name: LookCam Sync
-version: "0.5.5"
+version: "0.5.7"
 slug: lookcam_sync
 description: Downloads the LookCam recordings from the camera SD card to /media, locally, on a schedule
 url: https://github.com/badroum/lookcam-bridge
@@ -19,8 +19,13 @@ homeassistant_api: true
 host_network: true
 # pc_transfer: samba (Samba add-on) or http (built-in file server below)
 # http_port: file server for the PC (list, download with resume, delete once copied), LAN only, token
+# storage: internal (/media on the Pi SD card), usb (external disk mounted by Home Assistant under /media
+# or /share) or custom (storage_path, under /media or /share)
+# camera_*: camera settings, all optional. Empty = left as it is on the camera. A value is sent once, at the
+# first round after it changes (read before and after, copy kept in /data/camera/backup), never at every round.
 map:
   - media:rw
+  - share:rw
 options:
   camera_ip: 192.168.1.42
   password: ""
@@ -32,6 +37,7 @@ options:
   pc_transfer: samba
   http_port: 8099
   http_token: ""
+  storage: internal
 schema:
   camera_ip: str
   password: password
@@ -43,3 +49,18 @@ schema:
   pc_transfer: list(samba|http)
   http_port: port
   http_token: password
+  storage: list(internal|usb|custom)?
+  storage_path: str?
+  camera_sd_recording: bool?
+  camera_alarm_recording: bool?
+  camera_loop_recording: bool?
+  camera_sd_audio: bool?
+  camera_segment_minutes: int(1,60)?
+  camera_sensitivity: int(0,3)?
+  camera_alarm_start: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)?
+  camera_alarm_end: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)?
+  camera_brightness: int(0,63)?
+  camera_saturation: int(0,63)?
+  camera_contrast: int(0,63)?
+  camera_hue: int(0,63)?
+  camera_ir_mode: int(0,2)?

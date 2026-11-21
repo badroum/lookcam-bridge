@@ -1,5 +1,33 @@
 # Journal des modifications
 
+## 0.5.7 — 2026-11-21
+
+- Réglages de la caméra depuis l'add-on.
+  - Lecture à chaque tour : carte SD (présente, enregistrement, durée des segments, espace libre), alarme (sensibilité, plage horaire), image (luminosité, saturation) et LED infrarouges. Rien sur le Wi-Fi ni l'identifiant : la commande qui les renvoie n'est jamais utilisée. Dernière lecture dans `/data/camera/config.json`, une copie datée dans `/data/camera/backup/` à chaque changement et avant chaque envoi.
+  - Envoi seulement sur demande, de trois façons :
+    - options `camera_*` de l'onglet Configuration (toutes facultatives, vide = inchangé) : enregistrement sur carte, enregistrement sur alarme, boucle, son, durée des segments, sensibilité, plage d'alarme, luminosité, saturation, contraste, teinte, mode infrarouge. Une option est envoyée une seule fois, au premier tour après son changement, jamais à chaque tour : un réglage refait ensuite dans l'appli LookCam n'est pas écrasé ;
+    - service `hassio.addon_stdin` avec `input: {"camera": {"carte": {"openRes": 1}}}`, ou `{"camera": "read"}` pour une simple lecture ;
+    - route `POST /camera` du serveur de fichiers (même jeton), pour le site du PC, et `GET /camera` pour lire les réglages et le résultat du dernier envoi.
+  - Chaque valeur est contrôlée avant l'envoi (champ autorisé, plage). L'add-on relit la caméra après l'envoi et dit dans le journal ce qui est appliqué ou refusé. Événement Home Assistant `lookcam_sync_camera` avec la demande, les valeurs avant et après.
+  - Jamais envoyés : redémarrage, remise à zéro, mise à l'heure, formatage de la carte, suppression de fichiers, mot de passe, Wi-Fi, exposition.
+  - Un mouvement garde la priorité : aucun envoi pendant qu'un mouvement attend.
+- Nouveau capteur `sensor.lookcam_sync_camera` : « enregistre », « n'enregistre pas » (la vidéo la plus récente de la carte est trop ancienne), « enregistrement coupé », « carte absente » ou « carte en erreur ». Attributs : carte, enregistrement, durée des segments, espace libre et total (Go), dernière vidéo sur la caméra, sensibilité, plage d'alarme, réglages d'image, infrarouge, dernier envoi. Le journal le signale aussi à chaque tour.
+- Libellés et aides en français des options caméra dans l'onglet Configuration.
+
+## 0.5.6 — 2026-11-19
+
+- Choix du support de stockage, nouvelle option `storage` :
+  - `internal` (par défaut, comme avant) : `/media` de Home Assistant, sur la carte SD du Pi ;
+  - `usb` : le premier disque externe (clé ou disque USB) que Home Assistant a monté sous `/media/<nom>` ou `/share/<nom>` ;
+  - `custom` : le dossier indiqué dans la nouvelle option `storage_path`, sous `/media` ou `/share`.
+- Les vidéos vont dans `<support>/boite_aux_lettres/<jour>/`. Le serveur de fichiers du PC et la purge suivent le support choisi.
+- Les segments de mouvement restent dans `/media/boite_aux_lettres_mouvements/<jour>/`, quel que soit le support : la notification et le tableau de bord de Home Assistant y pointent (`media-source://media_source/local/boite_aux_lettres_mouvements/…`).
+- Au démarrage, le journal liste les supports vus par l'add-on avec leur espace libre (« Storage seen by the add-on: … »), puis le support retenu.
+- Si la clé USB n'est pas visible ou si le dossier n'est pas accessible en écriture, l'add-on reste sur `/media` et le dit dans le journal, sans s'arrêter.
+- Changement de support : les vidéos déjà enregistrées restent à l'ancien endroit (ni déplacées, ni supprimées). Le journal indique combien il en reste.
+- Accès ajouté au dossier `/share` de Home Assistant.
+- Pendant un tour, l'add-on relit la liste des vidéos déjà sur le PC dès qu'elle change, avant chaque téléchargement. Une vidéo arrivée sur le PC par un autre chemin (copie depuis la carte SD de la caméra, par exemple) n'est plus téléchargée une seconde fois. Le bilan du tour l'indique : « N skipped (reached the PC another way) ».
+
 ## 0.5.5 — 2026-11-15
 
 - L'add-on ne s'arrête plus quand le système tue un de ses processus. Le 15/11 vers 07:01, le Pi manquait de mémoire : le serveur de fichiers puis la boucle d'attente ont été tués (« Killed »). Comme bashio arrête le script à la première commande en échec, le serveur n'a pas été relancé et l'add-on s'est arrêté, sans redémarrage automatique.

@@ -8,11 +8,17 @@
 //                                 given, only if it matches), then the day folder once empty
 //   POST /have   {names:[...]}  (or PUT /have, text, one name per line) -> replaces already_on_pc.txt
 //   GET  /status               -> sync status (round, phase, behind_files, behind_min, next_at...)
+//   GET  /camera               -> {config, result, pending}: camera settings last read (no Wi-Fi, no ID),
+//                                 outcome of the last write request, request still waiting (0.5.7)
+//   POST /camera {changes:{carte:{openRes:1}, image:{brightness:30}, ...}} or {read:true}
+//                              -> 202 {id}: checked (camera.cjs), then sent by the sync between two downloads;
+//                                 400 with the reasons when a field or a value is not allowed
 //   GET  /health               -> {ok:true} (no token needed)
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const camera = require("./camera.cjs");
 
 const PORT = Number(process.env.HTTP_PORT || 8099);
 const TOKEN = process.env.HTTP_TOKEN || "";
@@ -98,6 +104,25 @@ async function handle(req, res) {
   if (req.method === "GET" && url.pathname === "/status") {
     // written by sync.cjs (0.5.4): round, phase, recordings still to fetch, minutes behind the camera, next round
     try { return send(res, 200, JSON.parse(fs.readFileSync(STATUS_FILE, "utf8"))); } catch { return send(res, 200, {}); }
+  }
+  if (req.method === "GET" && url.pathname === "/camera") {
+    const read = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return null; } };
+    let pending = false;
+    try { pending = fs.statSync(camera.REQUEST_FILE).size > 0; } catch {}
+    return send(res, 200, { config: read(camera.CONFIG_FILE), result: read(camera.RESULT_FILE), pending });
+  }
+  if (req.method === "POST" && url.pathname === "/camera") {
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch (e) { return send(res, e.code || 400, { error: e.message }); }
+    const changes = body && body.read === true ? "read" : body && body.changes;
+    const v = camera.validate(changes);
+    if (v.errors.length) return send(res, 400, { error: "refused", reasons: v.errors });
+    const id = crypto.randomBytes(6).toString("hex");
+    fs.mkdirSync(path.dirname(camera.REQUEST_FILE), { recursive: true });
+    fs.writeFileSync(camera.REQUEST_FILE + ".tmp", JSON.stringify({ source: "pc", id, at: new Date().toISOString(), changes: v.read ? "read" : v.changes }));
+    fs.renameSync(camera.REQUEST_FILE + ".tmp", camera.REQUEST_FILE);
+    log("info", `camera settings request ${id} from the PC queued: ${v.read ? "read" : JSON.stringify(v.changes)}`);
+    return send(res, 202, { id, queued: true });
   }
   if ((req.method === "GET" || req.method === "HEAD") && parts[0] === "file" && parts.length === 3) {
     const p = filePath(parts[1], parts[2]);

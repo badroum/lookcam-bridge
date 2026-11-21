@@ -1,5 +1,6 @@
 // Boite aux lettres - download the recordings from the LookCam camera SD card over local P2P.
-// Read-only on the camera: LoginDev, GetTfVideoList, DownloadFile. Never deletes anything.
+// On the camera: LoginDev, GetTfVideoList, DownloadFile, and the settings reads of camera.cjs. Settings are
+// written only on an explicit request (options camera_*, stdin, POST /camera), see camera.cjs. Never deletes anything.
 //
 // Protocol (reversed from LookCam 1.3.12):
 //   commands on DRW channel 1, framed A0 AF AF AF|00|tz|u64 ts|8x00|u32 len|json|F4 F3 F2 F1
@@ -41,6 +42,7 @@ const LOG_LEVEL = LEVELS[String(process.env.LOG_LEVEL || "info").toLowerCase()] 
 const emit = (lvl, tag) => (...a) => { if (LEVELS[lvl] >= LOG_LEVEL) console.log(new Date().toISOString(), tag, ...a); };
 const log = { debug: emit("debug", "DEBUG"), info: emit("info", "INFO"), warn: emit("warning", "WARN"), error: emit("error", "ERROR") };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const cameraMod = require("./camera.cjs");
 
 // ---------- pure helpers ----------
 // "20261112052714" -> "12/11 05:27"
@@ -403,6 +405,43 @@ async function pushStatus(st, force = false) {
   await set("sensor.lookcam_sync_retard", String(st.behind_min ?? 0), { unit_of_measurement: "min", friendly_name: "LookCam Sync retard", icon: "mdi:timer-sand" });
   await set("sensor.lookcam_sync_en_attente", String(st.behind_files ?? 0), { unit_of_measurement: "vidéos", friendly_name: "LookCam Sync vidéos en attente", icon: "mdi:download" });
 }
+// Any Home Assistant state through the Supervisor (camera sensor, 0.5.7).
+async function pushSensor(id, state, attributes) {
+  const token = process.env.SUPERVISOR_TOKEN;
+  if (!token) return;
+  try {
+    const r = await fetch(`http://supervisor/core/api/states/${id}`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ state, attributes: { ...attributes, version: process.env.ADDON_VERSION || "" } }),
+    });
+    if (!r.ok) log.debug(`sensor ${id}: HTTP ${r.status}`);
+  } catch (e) { log.debug(`sensor ${id}: ${e.message}`); }
+}
+let cameraApi = null;
+const camera = () => (cameraApi ||= cameraMod.makeCamera({ log, fireEvent, pushSensor }));
+// Camera clock: the SD names are in camera local time, read as UTC by stampMs.
+const nowLocalMs = () => Date.now() + TZ * 3600000;
+async function publishCamera(newestOnCard) {
+  try { return await camera().publish(cameraMod.loadConfig(), newestOnCard, nowLocalMs(), stampMs, fmtStamp); }
+  catch (e) { log.debug(`camera sensor: ${e.message}`); }
+}
+// Settings work at the start of a round or between two downloads: never while a motion is due (it keeps the
+// priority, 0.5.7). Errors are logged, the round goes on.
+async function cameraStep(sess, { read = false, options = false } = {}) {
+  try {
+    if (read) await camera().readAll(sess);
+    if (motionPending()) { if (options || camera().requestPending()) log.info("camera settings: a motion comes first, done after it"); return; }
+    if (options) await camera().serveOptions(sess);
+    await camera().serveRequest(sess);
+  } catch (e) { log.warn(`camera settings: ${e.message}`); }
+}
+// run.sh: CAMERA_APPLY=1 node /sync.cjs serves a settings request between two rounds.
+async function cameraMain() {
+  const sess = await openSession();
+  try { await cameraStep(sess, { read: true }); } finally { sess.close(); }
+  await publishCamera(loadStatus().newest_on_card || "");
+}
+
 // run.sh: STATUS_NEXT=<epoch s> node /sync.cjs records the time of the next round in the status
 async function statusNext(epoch) {
   const st = loadStatus();
@@ -418,6 +457,9 @@ async function main() {
   log.info(`camera ${CAM_IP}, storage budget ${MAX_BYTES ? MAX_BYTES / 1e9 + " GB" : "none"}, ${fetched.size} names in the fetched index`);
   let sess = await openSession();
   log.info("session up");
+  // camera settings (0.5.7): read them, then send the options camera_* that changed and a pending request
+  await cameraStep(sess, { read: true, options: true });
+  if (sess.closed) { sess = await openSession(); log.info("session reopened"); }
   const ref = { sess };
   // Full listing when nothing is known yet and at least once a day, to catch older gaps (a file that failed,
   // a round cut short). Every other round, the start-up one included (0.5.4), is incremental: the SD list
@@ -433,6 +475,7 @@ async function main() {
   const all = await listAll(ref, fullDue ? "" : newest);
   if (fullDue) markFullList();
   const cardNewest = all.map((c) => c.stamp).filter(Boolean).sort().pop() || ""; // the file being recorded included
+  await publishCamera(cardNewest);
   sess = ref.sess;
   const only = process.env.ONLY_DAY; // e.g. 2026-11-10 for tests
   // every finished recording, whatever its length (set in the camera app), oldest first:
@@ -452,13 +495,27 @@ async function main() {
     (only ? `, ${count.otherDay} on other days` : ""));
   if (todo.length) log.info(`to download: ${fmtStamp(todo[0].stamp)} to ${fmtStamp(todo[todo.length - 1].stamp)}, ${NEWEST_FIRST ? "newest" : "oldest"} first`);
   // lag indicator: recordings still to fetch, and how far the oldest of them is behind the newest on the card
+  const nowOnPc = new Set(); // reached the PC another way during this round (0.5.6)
   const lagOf = () => {
-    const w = todo.filter((c) => c.stamp && !fetched.has(c.name)).map((c) => c.stamp).sort();
+    const w = todo.filter((c) => c.stamp && !fetched.has(c.name) && !nowOnPc.has(c.name)).map((c) => c.stamp).sort();
     return { behind_files: w.length, behind_min: w.length && cardNewest ? Math.max(0, Math.round((stampMs(cardNewest) - stampMs(w[0])) / 60000)) : 0 };
   };
   Object.assign(status, { phase: "downloading", todo: todo.length, newest_on_card: cardNewest }, lagOf());
   await pushStatus(status, true);
-  let busySince = 0, nOk = 0, nFail = 0, bytesOk = 0, msOk = 0, stopped = "";
+  let busySince = 0, nOk = 0, nFail = 0, nSkipped = 0, bytesOk = 0, msOk = 0, stopped = "";
+  let skipMtime = 0, skipSet = skip;
+  const reloadSkip = () => {
+    try {
+      const m = fs.statSync(SKIP_FILE).mtimeMs;
+      if (m !== skipMtime) {
+        const before = skipSet.size;
+        skipMtime = m; skipSet = loadSkip();
+        if (skipMtime && skipSet.size !== before) log.info(`list of recordings on the PC reread: ${skipSet.size} names`);
+      }
+    } catch {}
+    return skipSet;
+  };
+  reloadSkip();
   const failed = new Set();
   outer: for (let i = 0; i < todo.length; i++) {
     const c = todo[i];
@@ -469,6 +526,14 @@ async function main() {
         log.info(`storage budget reached (${fmtGB(used)} used of ${MAX_BYTES / 1e9} GB), the rest waits for the PC to empty the share`);
         break;
       }
+    }
+    // The PC may have received this recording another way meanwhile (copied from the SD card, 0.5.6):
+    // reread its list when the file changed, and skip what it already has.
+    const skipNow = reloadSkip();
+    if (skipNow.has(c.name)) {
+      nSkipped++; nowOnPc.add(c.name);
+      log.debug(`skip ${c.name}: now on the PC`);
+      continue;
     }
     fs.mkdirSync(c.dir, { recursive: true });
     const dest = path.join(c.dir, c.name);
@@ -483,6 +548,10 @@ async function main() {
       continue;
     }
     if (motionPending()) { const r = { sess }; await serveMotions(r); sess = r.sess; }
+    if (camera().requestPending() && !motionPending()) {
+      if (sess.closed) { sess = await openSession(); log.info("session reopened for a camera settings request"); }
+      await cameraStep(sess);
+    }
     log.debug(`get [${i + 1}/${todo.length}] ${c.name} ${(c.size / 1e6).toFixed(1)} MB`);
     let drops = 0;
     const t0 = Date.now(); // whole time for this file, drops and reconnections included
@@ -539,17 +608,18 @@ async function main() {
   // advance the watermark to just before the oldest recording still waiting (budget, busy camera), or to
   // the newest finished one listed when nothing waits. Files that failed 3 times do not hold it back:
   // the daily full listing tries them again.
-  const waiting = todo.filter((c) => c.stamp && !fetched.has(c.name) && !failed.has(c.name)).map((c) => c.stamp).sort();
+  const waiting = todo.filter((c) => c.stamp && !fetched.has(c.name) && !failed.has(c.name) && !nowOnPc.has(c.name)).map((c) => c.stamp).sort();
   const listed = all.filter((c) => c.stamp && c.durMs !== null).map((c) => c.stamp).sort();
   const mark = waiting.length ? prevStamp(waiting[0]) : listed[listed.length - 1] || "";
   if (mark && (!newest || mark > newest || fullDue)) { saveWatermark(mark); log.debug(`complete up to ${fmtStamp(mark)}`); }
-  const left = todo.length - nOk - nFail;
+  const left = todo.length - nOk - nFail - nSkipped;
   const lag = lagOf();
   Object.assign(status, { phase: "idle", done: nOk, ended: new Date().toISOString(), complete_until: loadWatermark(), eta_min: 0 }, lag);
   delete status.next_at;
   await pushStatus(status, true);
   log.info(lag.behind_files ? `status: ${lag.behind_files} recording(s) still to fetch, ${lag.behind_min} min behind the camera` : "status: up to date");
   log.info(`round done in ${fmtDur(Date.now() - round0)}: ${nOk} downloaded (${fmtGB(bytesOk)}), ${nFail} failed` +
+    (nSkipped ? `, ${nSkipped} skipped (reached the PC another way)` : "") +
     (left > 0 ? `, ${left} left for the next round${stopped ? ` (${stopped})` : ""}` : ""));
 }
 
@@ -720,6 +790,7 @@ async function motionMain(at) {
 module.exports = { takeMotions, motionPending, segmentsFor, clipInfo, makeChunkParser, openSession, listAll, loadSkip, dirBytes, fmtStamp, fmtDur, fmtGB, newestKnown, prevStamp };
 if (require.main === module) {
   (process.env.STATUS_NEXT ? statusNext(process.env.STATUS_NEXT)
+    : process.env.CAMERA_APPLY === "1" ? cameraMain()
     : process.env.MOTION_AT ? motionMain(process.env.MOTION_AT)
     : process.env.MOTION_SERVE === "1" ? (async () => { const r = { sess: { closed: true, close() {} } }; try { await serveMotions(r, true); } finally { r.sess.close(); } })()
     : main()).then(() => process.exit(0), (e) => { log.error(e.message); process.exit(1); });

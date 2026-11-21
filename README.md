@@ -77,3 +77,22 @@ LAN only, `Authorization: Bearer <token>` on every request, port `http_port` (80
 `GET /list` (`{files:[{day,name,size,mtime}], parts:["day/name"]}`), `GET /file/<day>/<name>` (Range supported),
 `POST /done {"files":["day/name" | {day,name,size}]}` (deletes copied files; with a size, only if it matches),
 `POST /have {"names":[...]}` or `PUT /have` (one name per line), both replace `already_on_pc.txt`, `GET /health`.
+
+### Camera settings (LookCam Sync 0.5.7)
+
+The add-on reads the camera settings at every round (SD card, alarm, image, infrared LED; never `GetDevInfo`, which
+returns the Wi-Fi credentials) into `/data/camera/config.json`, keeps a dated copy in `/data/camera/backup/` on every
+change and before every write, and publishes `sensor.lookcam_sync_camera` (recording / not recording / recording off /
+no card / card error). It writes settings only on request, each value checked against an allow-list
+(`camera.cjs`), then read back:
+
+- options `camera_*` (all optional, empty = unchanged), sent once at the first round after they change;
+- stdin: `input: {"camera": {"carte": {"openRes": 1}, "image": {"brightness": 30}}}`, or `{"camera": "read"}`;
+- file server: `POST /camera {"changes": {...}}` or `{"read": true}` (202, then applied between two downloads),
+  `GET /camera` (`{config, result, pending}`).
+
+Sections and fields: `carte` (`openRes`, `alarmRes`, `loopRes`, `audio` 0/1, `videoCycle` 60-3600 s by 60),
+`alarme` (`sensitivity` 0-3, `putalarm`, `osd`, `audio`, `flag` 0/1, `goptime` 0-600, `starttime`, `endtime`,
+`twotime`, `twoend` "HH:MM"), `image` (`brightness`, `saturation`, `contrast`, `hue` 0-63), `ir` (`control` 0-2,
+times, `flag`). Never sent: reboot, reset, clock, SD format, file deletion, password, Wi-Fi, exposure. Each write
+fires `lookcam_sync_camera` (`ok`, `source`, `demande`, `avant`, `apres`, `refus`). A due motion goes first.
