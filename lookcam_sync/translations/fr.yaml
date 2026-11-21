@@ -1,0 +1,40 @@
+configuration:
+  camera_sd_recording:
+    name: "Caméra : enregistrement sur la carte SD"
+    description: "Active ou coupe l'enregistrement sur la carte SD de la caméra (openRes). Vide = inchangé. Envoyé une fois, au tour qui suit le changement."
+  camera_alarm_recording:
+    name: "Caméra : enregistrement sur alarme"
+    description: "Enregistrement déclenché par la détection de mouvement de la caméra (alarmRes). Vide = inchangé."
+  camera_loop_recording:
+    name: "Caméra : enregistrement en boucle"
+    description: "Champ loopRes de la caméra (écrasement des plus anciennes vidéos, d'après l'appli). Vide = inchangé."
+  camera_sd_audio:
+    name: "Caméra : son dans les vidéos"
+    description: "Piste audio dans les vidéos de la carte (coupée depuis le 11/11 : elle était corrompue). Vide = inchangé."
+  camera_segment_minutes:
+    name: "Caméra : durée des segments (min)"
+    description: "Durée de chaque fichier enregistré, de 1 à 60 minutes (videoCycle). Vide = inchangé."
+  camera_sensitivity:
+    name: "Caméra : sensibilité de l'alarme"
+    description: "0 désactivée, 1 faible, 2 moyenne, 3 élevée. Vide = inchangé."
+  camera_alarm_start:
+    name: "Caméra : début de la plage d'alarme"
+    description: "Heure HH:MM. Vide = inchangé."
+  camera_alarm_end:
+    name: "Caméra : fin de la plage d'alarme"
+    description: "Heure HH:MM. Vide = inchangé."
+  camera_brightness:
+    name: "Caméra : luminosité"
+    description: "0 à 63 (30 retenu le 11/11). La caméra arrondit parfois d'un cran. Vide = inchangé."
+  camera_saturation:
+    name: "Caméra : saturation"
+    description: "0 à 63 (30 retenu le 11/11). Vide = inchangé."
+  camera_contrast:
+    name: "Caméra : contraste"
+    description: "0 à 63, seulement si la caméra le gère (elle ne le renvoie pas aujourd'hui). Vide = inchangé."
+  camera_hue:
+    name: "Caméra : teinte"
+    description: "0 à 63, seulement si la caméra le gère. Vide = inchangé."
+  camera_ir_mode:
+    name: "Caméra : mode infrarouge (valeur brute)"
+    description: "Champ control des LED infrarouges, 0 à 2 (0 aujourd'hui). Signification à vérifier dans l'appli avant de changer. Vide = inchangé."
