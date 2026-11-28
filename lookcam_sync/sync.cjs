@@ -43,6 +43,7 @@ const emit = (lvl, tag) => (...a) => { if (LEVELS[lvl] >= LOG_LEVEL) console.log
 const log = { debug: emit("debug", "DEBUG"), info: emit("info", "INFO"), warn: emit("warning", "WARN"), error: emit("error", "ERROR") };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cameraMod = require("./camera.cjs");
+const { isDated } = cameraMod;
 
 // ---------- pure helpers ----------
 // "20261112052714" -> "12/11 05:27"
@@ -240,7 +241,8 @@ async function listAll(ref, stopAt = "") {
       if (!firstTotal) firstTotal = total;
       const v = rep.value || [];
       all.push(...v);
-      const st = v.map((x) => clipInfo(x).stamp).filter(Boolean).sort();
+      // 1970 names (clock lost) say nothing about where the listing stands: left out of the stop test
+      const st = v.map((x) => clipInfo(x).stamp).filter(isDated).sort();
       if (st.length && (!oldest || st[0] < oldest)) oldest = st[0];
       if (pass === 0 && !expected && total) {
         // page estimate: whole card, or (incremental) from the time span of this first page
@@ -421,8 +423,8 @@ let cameraApi = null;
 const camera = () => (cameraApi ||= cameraMod.makeCamera({ log, fireEvent, pushSensor }));
 // Camera clock: the SD names are in camera local time, read as UTC by stampMs.
 const nowLocalMs = () => Date.now() + TZ * 3600000;
-async function publishCamera(newestOnCard) {
-  try { return await camera().publish(cameraMod.loadConfig(), newestOnCard, nowLocalMs(), stampMs, fmtStamp); }
+async function publishCamera(newestOnCard, undated = null) {
+  try { return await camera().publish(cameraMod.loadConfig(), newestOnCard, nowLocalMs(), stampMs, fmtStamp, undated); }
   catch (e) { log.debug(`camera sensor: ${e.message}`); }
 }
 // Settings work at the start of a round or between two downloads: never while a motion is due (it keeps the
@@ -474,8 +476,13 @@ async function main() {
     `, ${NEWEST_FIRST ? "newest" : "oldest"} first`);
   const all = await listAll(ref, fullDue ? "" : newest);
   if (fullDue) markFullList();
-  const cardNewest = all.map((c) => c.stamp).filter(Boolean).sort().pop() || ""; // the file being recorded included
-  await publishCamera(cardNewest);
+  // 1970 names (camera clock lost, 0.5.8) are still downloaded but kept out of the watermark and the lag
+  const cardNewest = all.map((c) => c.stamp).filter(isDated).sort().pop() || ""; // the file being recorded included
+  try {
+    if (await camera().serveClock(ref.sess, all, process.env.CAMERA_CLOCK_SYNC || "auto")) log.info("camera clock set: new recordings get the right date");
+  } catch (e) { log.warn(`camera clock: ${e.message}`); }
+  sess = ref.sess;
+  await publishCamera(cardNewest, all.filter((c) => c.stamp && !isDated(c.stamp)).length);
   sess = ref.sess;
   const only = process.env.ONLY_DAY; // e.g. 2026-11-10 for tests
   // every finished recording, whatever its length (set in the camera app), oldest first:
@@ -497,7 +504,7 @@ async function main() {
   // lag indicator: recordings still to fetch, and how far the oldest of them is behind the newest on the card
   const nowOnPc = new Set(); // reached the PC another way during this round (0.5.6)
   const lagOf = () => {
-    const w = todo.filter((c) => c.stamp && !fetched.has(c.name) && !nowOnPc.has(c.name)).map((c) => c.stamp).sort();
+    const w = todo.filter((c) => isDated(c.stamp) && !fetched.has(c.name) && !nowOnPc.has(c.name)).map((c) => c.stamp).sort();
     return { behind_files: w.length, behind_min: w.length && cardNewest ? Math.max(0, Math.round((stampMs(cardNewest) - stampMs(w[0])) / 60000)) : 0 };
   };
   Object.assign(status, { phase: "downloading", todo: todo.length, newest_on_card: cardNewest }, lagOf());
@@ -608,8 +615,8 @@ async function main() {
   // advance the watermark to just before the oldest recording still waiting (budget, busy camera), or to
   // the newest finished one listed when nothing waits. Files that failed 3 times do not hold it back:
   // the daily full listing tries them again.
-  const waiting = todo.filter((c) => c.stamp && !fetched.has(c.name) && !failed.has(c.name) && !nowOnPc.has(c.name)).map((c) => c.stamp).sort();
-  const listed = all.filter((c) => c.stamp && c.durMs !== null).map((c) => c.stamp).sort();
+  const waiting = todo.filter((c) => isDated(c.stamp) && !fetched.has(c.name) && !failed.has(c.name) && !nowOnPc.has(c.name)).map((c) => c.stamp).sort();
+  const listed = all.filter((c) => isDated(c.stamp) && c.durMs !== null).map((c) => c.stamp).sort();
   const mark = waiting.length ? prevStamp(waiting[0]) : listed[listed.length - 1] || "";
   if (mark && (!newest || mark > newest || fullDue)) { saveWatermark(mark); log.debug(`complete up to ${fmtStamp(mark)}`); }
   const left = todo.length - nOk - nFail - nSkipped;
