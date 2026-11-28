@@ -6,6 +6,7 @@
   - Nouvelle option `camera_clock_sync` : `auto` (par défaut) ou `off`. En `auto`, l'add-on remet la caméra à l'heure de Home Assistant quand elle enregistre avec une date de 1970, quand sa vidéo la plus récente est très en retard ou dans le futur (au plus une fois toutes les 6 h), après un changement d'heure été/hiver (la caméra ne le fait pas seule) et une fois après la mise à jour.
   - Commande utilisée : celle de l'appli LookCam (`AppointDev`, action 3 « synchroniser l'heure » uniquement). Les actions redémarrage, remise à zéro et réglages d'usine, qui passent par la même commande, ne peuvent pas être envoyées.
   - Journal : « camera clock: <raison>, setting it to … », et le nombre de vidéos datées de 1970 sur la carte. Événement `lookcam_sync_camera` avec `source: horloge`.
+- Mouvement reçu pendant que la caméra est en 1970 : l'événement `lookcam_sync_mouvement` part tout de suite avec `ok: false` et `erreur: "horloge caméra en 1970"` (au lieu de « segment introuvable » au bout de 12 min), et la caméra est remise à l'heure.
 - Les vidéos datées de 1970 sont toujours récupérées, mais elles n'entrent plus dans le repère de reprise ni dans le calcul du retard : avant, une seule de ces vidéos en attente faisait relire toute la carte à chaque tour et affichait un retard de 56 ans.
 - Capteur `sensor.lookcam_sync_camera` : nouvel état « horloge perdue (1970) », attributs `videos_datees_1970` et `derniere_mise_a_l_heure`.
 

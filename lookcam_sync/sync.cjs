@@ -743,7 +743,16 @@ async function motionStep(at, ref) {
   const from = new Date(stampMs(at) - 10 * 60000).toISOString().replace(/\D/g, "").slice(0, 14);
   if (ref.sess.closed) ref.sess = await openSession();
   ref.sess.preemptable = false; // never pause a motion download for another motion
-  const sel = segmentsFor(await listAll(ref, from), at);
+  const list = await listAll(ref, from);
+  // camera clock lost (1970 names, 0.5.8): the segment can never match the motion time; say so at once and
+  // set the clock, the next motions will be found
+  if (list.some((c) => c.durMs === null && c.stamp && !isDated(c.stamp))) {
+    log.warn(`motion ${fmtStamp(at)}: the camera records with a 1970 date, its segment cannot be found`);
+    try { await camera().serveClock(ref.sess, list, process.env.CAMERA_CLOCK_SYNC || "auto"); } catch (e) { log.warn(`camera clock: ${e.message}`); }
+    await fireEvent("lookcam_sync_mouvement", { heure: at, ok: false, erreur: "horloge caméra en 1970" });
+    return "done";
+  }
+  const sel = segmentsFor(list, at);
   if (sel.pending || !sel.clips.length) return "pending";
   try {
     const files = [];
