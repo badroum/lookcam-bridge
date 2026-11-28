@@ -16,8 +16,16 @@
 //   - the add-on stdin: hassio.addon_stdin with input {"camera": {"carte": {"openRes": 1}}} ("read" to
 //     read only), written by run.sh into REQUEST_FILE;
 //   - the file server: POST /camera (token), for the PC.
-// Never sent: reboot, reset, clock (AppointDev), SD format (FormatCard), file deletion (DeleteTfFile),
+// Never sent: reboot, reset (AppointDev states 1, 2, 4), SD format (FormatCard), file deletion (DeleteTfFile),
 // password, Wi-Fi, exposure (ranges unknown).
+//
+// Clock (0.5.8): with no internet access the camera restarts at 01/01/1970 after a power cut and names its
+// recordings 19700101-... until someone sets its clock (the app only does it from its "Sync time" button).
+// The add-on sends AppointDev state 3 (SYNC_TIME, and nothing else: the message is built in one place, state
+// fixed) when the camera records with a 1970 date, when its newest recording is far behind the host clock,
+// when the daylight saving offset changed since the last sync (the camera has no DST rules), and once after
+// the update. Fields as in LookCam 1.3.12 (PpcsDeviceMaintenanceRepository.syncTime): time = local time in
+// seconds counted as UTC, zone = offset in whole hours, zone_s = offset in seconds. One-way: no answer.
 const fs = require("fs");
 const path = require("path");
 
@@ -26,6 +34,7 @@ const CONFIG_FILE = path.join(DIR, "config.json"); // last read, sensitive field
 const REQUEST_FILE = path.join(DIR, "request.json"); // pending write request (stdin, PC)
 const RESULT_FILE = path.join(DIR, "result.json"); // outcome of the last request
 const APPLIED_FILE = path.join(DIR, "applied_options.json"); // option values already sent
+const CLOCK_FILE = path.join(DIR, "clock.json"); // last clock sync: at, offset_s, reason
 const BACKUP_DIR = path.join(DIR, "backup"); // one copy per change of the settings, before every write
 const MAX_BACKUPS = 60;
 
@@ -289,7 +298,7 @@ function makeCamera({ log, fireEvent, pushSensor }) {
   }
 
   // Home Assistant sensor sensor.lookcam_sync_camera: is the camera recording to its SD card?
-  async function publish(cfg, newestOnCard, nowLocalMs, stampMs, fmtStamp) {
+  async function publish(cfg, newestOnCard, nowLocalMs, stampMs, fmtStamp, undated = null) {
     const c = cfg.carte || {}, a = cfg.alarme || {}, im = cfg.image || {}, ir = cfg.ir || {};
     const cycleMs = (c.videoCycle || 1800) * 1000;
     const ageMs = newestOnCard ? nowLocalMs - stampMs(newestOnCard) : null;
@@ -299,7 +308,10 @@ function makeCamera({ log, fireEvent, pushSensor }) {
     else if (c.openRes === 0) { state = "enregistrement coupé"; warn = "SD recording is off in the camera (option camera_sd_recording to switch it on)"; }
     // margin of 90 min on top of two segments: a time zone mismatch between the camera and the host
     // (1 h) must not raise a false alarm
-    else if (ageMs !== null && ageMs > 2 * cycleMs + 90 * 60000) {
+    else if (undated && ageMs !== null && ageMs > 2 * cycleMs + 90 * 60000) {
+      state = "horloge perdue (1970)";
+      warn = `the camera records with a 1970 date (${undated} file(s)): its clock is set at the next round (option camera_clock_sync)`;
+    } else if (ageMs !== null && ageMs > 2 * cycleMs + 90 * 60000) {
       state = "n'enregistre pas";
       warn = `the camera is not recording: newest file on the SD card ${fmtStamp(newestOnCard)}, ${Math.round(ageMs / 3600000)} h ago`;
     } else if (!Object.keys(c).length) state = "inconnu";
@@ -320,15 +332,91 @@ function makeCamera({ log, fireEvent, pushSensor }) {
       luminosite: im.brightness ?? null, saturation: im.saturation ?? null, contraste: im.contrast ?? null, teinte: im.hue ?? null,
       infrarouge: ir.control ?? null,
       lu_le: cfg.read_at || null,
+      videos_datees_1970: undated,
+      derniere_mise_a_l_heure: (readJson(CLOCK_FILE, null) || {}).at || null,
       dernier_envoi: last ? `${last.at} ${last.source} ${last.ok ? "ok" : "refusé : " + (last.refused || []).join("; ")}` : null,
     });
     return state;
   }
 
-  return { readAll, apply, serveRequest, serveOptions, publish, requestPending };
+  // Time zone of Home Assistant (Settings > System > General), else the add-on's own.
+  async function hostOffset(nowMs) {
+    let tz = "";
+    try {
+      const token = process.env.SUPERVISOR_TOKEN;
+      if (token) {
+        const r = await fetch("http://supervisor/core/api/config", { headers: { Authorization: `Bearer ${token}` } });
+        if (r.ok) tz = (await r.json()).time_zone || "";
+      }
+    } catch {}
+    tz = tz || process.env.TZ || "";
+    const off = tz ? zoneOffset(tz, nowMs) : null;
+    return { tz, offsetS: off ?? -new Date(nowMs).getTimezoneOffset() * 60 };
+  }
+
+  // Sets the camera clock when clockDue says so (option camera_clock_sync: auto, the default; off = never).
+  async function serveClock(sess, list, mode = "auto") {
+    if (mode === "off") return "";
+    const nowMs = Date.now();
+    const { tz, offsetS } = await hostOffset(nowMs);
+    const last = readJson(CLOCK_FILE, null);
+    const cfg = readJson(CONFIG_FILE, {});
+    const reason = clockDue({ list, offsetS, nowMs, cycleS: (cfg.carte || {}).videoCycle, last });
+    const undated = list.filter((c) => c.stamp && !isDated(c.stamp)).length;
+    if (undated) log.warn(`${undated} recording(s) on the SD card are dated 1970 (camera clock lost after a power cut)`);
+    if (!reason) return "";
+    if (!tz && !process.env.TZ) { log.warn(`camera clock not set (${reason}): time zone unknown`); return ""; }
+    const msg = clockMessage(nowMs, offsetS);
+    log.info(`camera clock: ${reason}, setting it to ${new Date(msg.time * 1000).toISOString().slice(0, 19).replace("T", " ")} (${tz || "TZ"}, UTC${offsetS >= 0 ? "+" : ""}${offsetS / 3600})`);
+    // one-way command: the camera does not answer
+    await sess.cmd(msg, 2000).catch(() => {});
+    const rec = { at: new Date(nowMs).toISOString(), offset_s: offsetS, tz, reason, undated_on_card: undated };
+    writeJson(CLOCK_FILE, rec);
+    await fireEvent("lookcam_sync_camera", { ok: true, source: "horloge", heure: rec.at, raison: reason });
+    return reason;
+  }
+
+  return { readAll, apply, serveRequest, serveOptions, publish, requestPending, serveClock };
 }
 
 const loadConfig = () => readJson(CONFIG_FILE, {});
 
-module.exports = { loadConfig, SECTIONS, OPTIONS, validate, optionChanges, pruneApplied, buildSet, clean, checkValue, sameValue, makeCamera,
+// ---------- clock (0.5.8) ----------
+// A recording name stamp (YYYYMMDDHHMMSS) the camera made with a set clock. 1970 = clock lost.
+const isDated = (st) => typeof st === "string" && st.length >= 8 && st.slice(0, 4) >= "2024";
+// Offset of a time zone (e.g. "Europe/Paris") at an instant, in seconds; null when unknown.
+function zoneOffset(tz, nowMs) {
+  try {
+    const f = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const p = Object.fromEntries(f.formatToParts(new Date(nowMs)).map((x) => [x.type, x.value]));
+    const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second);
+    return Math.round((asUtc - Math.floor(nowMs / 1000) * 1000) / 60000) * 60;
+  } catch { return null; }
+}
+// The only AppointDev message the add-on can build: state 3 (SYNC_TIME). States 1 (restart), 2 (factory
+// reset) and 4 (restore defaults) use the same command and are never sent.
+function clockMessage(nowMs, offsetS) {
+  if (!Number.isInteger(offsetS) || Math.abs(offsetS) > 14 * 3600) throw new Error(`bad time zone offset ${offsetS}`);
+  return { cmd: "AppointDev", state: 3, time: Math.floor(nowMs / 1000) + offsetS, zone: Math.trunc(offsetS / 3600), zone_s: offsetS };
+}
+// Why the clock should be set now ("" = no need). list: the SD listing of this round (clipInfo items).
+function clockDue({ list, offsetS, nowMs, cycleS, last }) {
+  const recording = list.filter((c) => c.durMs === null && c.stamp);
+  if (recording.some((c) => !isDated(c.stamp))) return "the camera records with a 1970 date";
+  if (!last || !last.at) return "first sync by the add-on";
+  if (last.offset_s !== offsetS) return `time zone offset changed (${last.offset_s / 3600} h -> ${offsetS / 3600} h, daylight saving)`;
+  const newest = list.map((c) => c.stamp).filter(isDated).sort().pop();
+  const sinceLast = nowMs - Date.parse(last.at);
+  if (newest && sinceLast > 6 * 3600000) {
+    const st = newest;
+    const camMs = Date.UTC(+st.slice(0, 4), +st.slice(4, 6) - 1, +st.slice(6, 8), +st.slice(8, 10), +st.slice(10, 12), +st.slice(12, 14) || 0);
+    const ageMs = nowMs + offsetS * 1000 - camMs;
+    // newest recording in the future, or far behind while the camera answers: clock off (or not recording)
+    if (ageMs < -10 * 60000) return `newest recording ${Math.round(-ageMs / 60000)} min in the future`;
+    if (ageMs > 2 * (cycleS || 1800) * 1000 + 90 * 60000) return `newest recording ${Math.round(ageMs / 3600000)} h behind the host clock`;
+  }
+  return "";
+}
+
+module.exports = { isDated, zoneOffset, clockMessage, clockDue, CLOCK_FILE, loadConfig, SECTIONS, OPTIONS, validate, optionChanges, pruneApplied, buildSet, clean, checkValue, sameValue, makeCamera,
   CONFIG_FILE, REQUEST_FILE, RESULT_FILE, DIR };

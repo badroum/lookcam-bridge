@@ -38,3 +38,6 @@ configuration:
   camera_ir_mode:
     name: "Caméra : mode infrarouge (valeur brute)"
     description: "Champ control des LED infrarouges, 0 à 2 (0 aujourd'hui). Signification à vérifier dans l'appli avant de changer. Vide = inchangé."
+  camera_clock_sync:
+    name: "Caméra : mise à l'heure automatique"
+    description: "auto (par défaut) : l'add-on remet la caméra à l'heure quand elle a perdu son horloge (vidéos datées de 1970 après une coupure), après un changement d'heure été/hiver et une fois après la mise à jour. off : jamais."

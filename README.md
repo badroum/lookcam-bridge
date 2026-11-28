@@ -96,3 +96,13 @@ Sections and fields: `carte` (`openRes`, `alarmRes`, `loopRes`, `audio` 0/1, `vi
 `twotime`, `twoend` "HH:MM"), `image` (`brightness`, `saturation`, `contrast`, `hue` 0-63), `ir` (`control` 0-2,
 times, `flag`). Never sent: reboot, reset, clock, SD format, file deletion, password, Wi-Fi, exposure. Each write
 fires `lookcam_sync_camera` (`ok`, `source`, `demande`, `avant`, `apres`, `refus`). A due motion goes first.
+
+### Camera clock (LookCam Sync 0.5.8)
+
+Without internet the camera restarts at 01/01/1970 after a power cut and names its recordings `19700101-…`.
+With `camera_clock_sync: auto` (default) the add-on sends `AppointDev` with `state: 3` only (SYNC_TIME; states 1,
+2 and 4 restart or reset the camera and are never sent), `time` = local time in seconds counted as UTC, `zone` =
+offset in hours, `zone_s` = offset in seconds, from the Home Assistant time zone. It does so when the recording in
+progress has a 1970 name, when the newest recording is far behind or ahead of the host clock (at most every 6 h),
+when the daylight saving offset changed since the last sync, and once after the update (`/data/camera/clock.json`).
+1970 recordings are still downloaded (folder `1970-01-01`) but kept out of the watermark and the lag.

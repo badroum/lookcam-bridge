@@ -38,3 +38,6 @@ configuration:
   camera_ir_mode:
     name: "Camera: infrared mode (raw value)"
     description: "Infrared LED field control, 0 to 2. Check its meaning in the app before changing it. Empty = unchanged."
+  camera_clock_sync:
+    name: "Camera: automatic clock sync"
+    description: "auto (default): the add-on sets the camera clock when it lost it (recordings dated 1970 after a power cut), after a daylight saving change and once after the update. off: never."

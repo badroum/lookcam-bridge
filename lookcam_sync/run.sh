@@ -7,6 +7,10 @@ export CAM_IP="$(bashio::config 'camera_ip')"
 export CAM_PASSWORD="$(bashio::config 'password')"
 export STATE_FILE="/data/fetched.json"   # clips already fetched (the PC may move them away)
 export MOTION_QUEUE="/data/motion_queue"  # motion times from Home Assistant, read by sync.cjs (0.5.2)
+# camera clock (0.5.8): auto (default) or off
+CAMERA_CLOCK_SYNC="auto"
+if bashio::config.has_value 'camera_clock_sync'; then CAMERA_CLOCK_SYNC="$(bashio::config 'camera_clock_sync')"; fi
+export CAMERA_CLOCK_SYNC
 export CAMERA_DIR="/data/camera"          # camera settings: last read, backups, pending request (0.5.7)
 CAMERA_REQUEST="${CAMERA_DIR}/request.json"
 mkdir -p "${CAMERA_DIR}"
